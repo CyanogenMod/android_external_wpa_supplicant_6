@@ -15,9 +15,9 @@
 #include "includes.h"
 
 #include "common.h"
-#include "dh_groups.h"
-#include "sha256.h"
-#include "aes_wrap.h"
+#include "crypto/dh_groups.h"
+#include "crypto/sha256.h"
+#include "crypto/aes_wrap.h"
 #include "wps_i.h"
 
 

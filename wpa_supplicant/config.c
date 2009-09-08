@@ -16,7 +16,7 @@
 
 #include "common.h"
 #include "wpa.h"
-#include "sha1.h"
+#include "crypto/sha1.h"
 #include "eap_peer/eap.h"
 #include "config.h"
 

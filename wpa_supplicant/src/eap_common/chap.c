@@ -15,8 +15,8 @@
 #include "includes.h"
 
 #include "common.h"
-#include "md5.h"
-#include "crypto.h"
+#include "crypto/md5.h"
+#include "crypto/crypto.h"
 #include "chap.h"
 
 void chap_md5(u8 id, const u8 *secret, size_t secret_len, const u8 *challenge,

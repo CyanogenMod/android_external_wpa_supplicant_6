@@ -19,8 +19,8 @@
 #include "eap_peer/eap.h"
 #include "eloop.h"
 #include "eapol_common.h"
-#include "md5.h"
-#include "rc4.h"
+#include "crypto/md5.h"
+#include "crypto/rc4.h"
 #include "state_machine.h"
 #include "wpabuf.h"
 

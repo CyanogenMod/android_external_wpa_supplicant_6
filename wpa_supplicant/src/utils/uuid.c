@@ -15,8 +15,8 @@
 #include "includes.h"
 
 #include "common.h"
-#include "crypto.h"
-#include "sha1.h"
+#include "crypto/crypto.h"
+#include "crypto/sha1.h"
 #include "uuid.h"
 
 int uuid_str2bin(const char *str, u8 *bin)

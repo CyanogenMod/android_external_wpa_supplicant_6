@@ -15,7 +15,7 @@
 #include "includes.h"
 
 #include "common.h"
-#include "sha1.h"
+#include "crypto/sha1.h"
 #include "wpabuf.h"
 #include "eap_defs.h"
 #include "eap_sake_common.h"

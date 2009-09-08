@@ -90,7 +90,7 @@ static void wpas_wps_security_workaround(struct wpa_supplicant *wpa_s,
 {
 	struct wpa_driver_capa capa;
 	size_t i;
-	struct wpa_scan_res *bss;
+	struct wpa_scan_res *bss = NULL;
 	const u8 *ie;
 	struct wpa_ie_data adv;
 	int wpa2 = 0, ccmp = 0;

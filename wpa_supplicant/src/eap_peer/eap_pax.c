@@ -17,8 +17,8 @@
 #include "common.h"
 #include "eap_peer/eap_i.h"
 #include "eap_common/eap_pax_common.h"
-#include "sha1.h"
-#include "crypto.h"
+#include "crypto/sha1.h"
+#include "crypto/crypto.h"
 
 /*
  * Note: only PAX_STD subprotocol is currently supported

@@ -15,7 +15,7 @@
 #include "includes.h"
 
 #include "common.h"
-#include "sha256.h"
+#include "crypto/sha256.h"
 #include "base64.h"
 #include "ieee802_11_defs.h"
 #include "eloop.h"

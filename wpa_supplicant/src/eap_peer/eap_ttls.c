@@ -18,10 +18,10 @@
 #include "eap_peer/eap_i.h"
 #include "eap_peer/eap_tls_common.h"
 #include "eap_peer/eap_config.h"
-#include "ms_funcs.h"
-#include "sha1.h"
+#include "crypto/ms_funcs.h"
+#include "crypto/sha1.h"
 #include "eap_common/chap.h"
-#include "tls.h"
+#include "crypto/tls.h"
 #include "mschapv2.h"
 #include "eap_common/eap_ttls.h"
 
