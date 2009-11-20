@@ -20,12 +20,24 @@
 #include <sys/un.h>
 #endif /* CONFIG_CTRL_IFACE_UNIX */
 
+#ifdef ANDROID
+#include <dirent.h>
+#include <linux/limits.h>
+#include <cutils/sockets.h>
+#include <cutils/memory.h>
+#include "private/android_filesystem_config.h"
+#endif
+
 #include "wpa_ctrl.h"
 #include "common.h"
 
 
 #if defined(CONFIG_CTRL_IFACE_UNIX) || defined(CONFIG_CTRL_IFACE_UDP)
 #define CTRL_IFACE_SOCKET
+#ifdef ANDROID
+static const char *local_socket_dir = "/data/misc/wifi/sockets";
+static const char *local_socket_prefix = "wpa_ctrl_";
+#endif /* ANDROID */
 #endif /* CONFIG_CTRL_IFACE_UNIX || CONFIG_CTRL_IFACE_UDP */
 
 
@@ -81,7 +93,12 @@ struct wpa_ctrl * wpa_ctrl_open(const char *ctrl_path)
 	counter++;
 try_again:
 	ret = os_snprintf(ctrl->local.sun_path, sizeof(ctrl->local.sun_path),
+#ifdef ANDROID
+			  "%s/%s%d-%d", local_socket_dir, local_socket_prefix,
+                    getpid(), counter);
+#else /* ANDROID */
 			  "/tmp/wpa_ctrl_%d-%d", getpid(), counter);
+#endif
 	if (ret < 0 || (size_t) ret >= sizeof(ctrl->local.sun_path)) {
 		close(ctrl->s);
 		os_free(ctrl);
@@ -105,6 +122,30 @@ try_again:
 		return NULL;
 	}
 
+#ifdef ANDROID
+	chmod(ctrl->local.sun_path, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP);
+	chown(ctrl->local.sun_path, AID_SYSTEM, AID_WIFI);
+	/*
+	 * If the ctrl_path isn't an absolute pathname, assume that
+	 * it's the name of a socket in the Android reserved namespace.
+	 * Otherwise, it's a normal UNIX domain socket appearing in the
+	 * filesystem.
+	 */
+	if (ctrl_path != NULL && *ctrl_path != '/') {
+		os_snprintf(ctrl->dest.sun_path, sizeof(ctrl->dest.sun_path), "wpa_%s",
+			    ctrl_path);
+		if (socket_local_client_connect(ctrl->s,
+						ctrl->dest.sun_path,
+						ANDROID_SOCKET_NAMESPACE_RESERVED,
+						SOCK_DGRAM) < 0) {
+			close(ctrl->s);
+			unlink(ctrl->local.sun_path);
+			os_free(ctrl);
+			return NULL;
+		}
+		return ctrl;
+	}
+#endif
 	ctrl->dest.sun_family = AF_UNIX;
 	res = os_strlcpy(ctrl->dest.sun_path, ctrl_path,
 			 sizeof(ctrl->dest.sun_path));
@@ -127,13 +168,61 @@ try_again:
 
 void wpa_ctrl_close(struct wpa_ctrl *ctrl)
 {
+	if (ctrl == NULL)
+		return;
 	unlink(ctrl->local.sun_path);
-	close(ctrl->s);
+	if (ctrl->s >= 0)
+		close(ctrl->s);
 	os_free(ctrl);
 }
 
-#endif /* CONFIG_CTRL_IFACE_UNIX */
+#ifdef ANDROID
+/**
+ * wpa_ctrl_cleanup() - Delete any local UNIX domain socket files that
+ * may be left over from clients that were previously connected to
+ * wpa_supplicant. This keeps these files from being orphaned in the
+ * event of crashes that prevented them from being removed as part
+ * of the normal orderly shutdown.
+ */
+void wpa_ctrl_cleanup()
+{
+    DIR *dir;
+    struct dirent entry;
+    struct dirent *result;
+    size_t dirnamelen;
+    int prefixlen = strlen(local_socket_prefix);
+    size_t maxcopy;
+    char pathname[PATH_MAX];
+    char *namep;
 
+    if ((dir = opendir(local_socket_dir)) == NULL)
+        return;
+
+    dirnamelen = (size_t)snprintf(pathname, sizeof(pathname), "%s/", local_socket_dir);
+    if (dirnamelen >= sizeof(pathname)) {
+        closedir(dir);
+        return;
+    }
+    namep = pathname + dirnamelen;
+    maxcopy = PATH_MAX-dirnamelen;
+    while (readdir_r(dir, &entry, &result) == 0 && result != NULL) {
+        if (strncmp(entry.d_name, local_socket_prefix, prefixlen) == 0) {
+            if (strlcpy(namep, entry.d_name, maxcopy) < maxcopy) {
+                unlink(pathname);
+            }
+        }
+    }
+    closedir(dir);
+}
+#endif /* ANDROID */
+
+#else /* CONFIG_CTRL_IFACE_UNIX */
+#ifdef ANDROID
+void wpa_ctrl_cleanup()
+{
+}
+#endif /* ANDROID */
+#endif /* CONFIG_CTRL_IFACE_UNIX */
 
 #ifdef CONFIG_CTRL_IFACE_UDP
 
@@ -234,7 +323,11 @@ int wpa_ctrl_request(struct wpa_ctrl *ctrl, const char *cmd, size_t cmd_len,
 	os_free(cmd_buf);
 
 	for (;;) {
+#ifdef ANDROID
+		tv.tv_sec = 10;
+#else
 		tv.tv_sec = 2;
+#endif
 		tv.tv_usec = 0;
 		FD_ZERO(&rfds);
 		FD_SET(ctrl->s, &rfds);
@@ -447,7 +540,7 @@ int wpa_ctrl_pending(struct wpa_ctrl *ctrl)
 
 int wpa_ctrl_get_fd(struct wpa_ctrl *ctrl)
 {
-	return -1;
+	return ctrl->pipe;
 }
 
 #endif /* CONFIG_CTRL_IFACE_NAMED_PIPE */

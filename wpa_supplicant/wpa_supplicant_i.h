@@ -358,6 +358,13 @@ struct wpa_supplicant {
 	struct wps_context *wps;
 	int wps_success; /* WPS success event received */
 	int blacklist_cleared;
+
+	int scan_ongoing; /* scan ongoing or not */
+	int link_speed;   /* current link speed */
+	int rssi;         /* current signal level */
+#ifdef ANDROID
+	int scan_interval; /* time between scans when no APs available */
+#endif
 };
 
 
@@ -757,6 +764,14 @@ static inline int wpa_drv_set_probe_req_ie(struct wpa_supplicant *wpa_s,
 	if (wpa_s->driver->set_probe_req_ie)
 		return wpa_s->driver->set_probe_req_ie(wpa_s->drv_priv, ies,
 						       ies_len);
+	return -1;
+}
+
+static inline int wpa_drv_driver_cmd(struct wpa_supplicant *wpa_s,
+					  char *cmd, char *buf, size_t buf_len)
+{
+	if (wpa_s->driver->driver_cmd)
+		return wpa_s->driver->driver_cmd(wpa_s->drv_priv, cmd, buf, buf_len);
 	return -1;
 }
 

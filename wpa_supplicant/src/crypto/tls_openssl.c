@@ -47,6 +47,22 @@
 #endif
 #endif
 
+#ifdef ANDROID
+#include <openssl/pem.h>
+#include "keystore_get.h"
+
+static BIO *BIO_from_keystore(const char *key)
+{
+	BIO *bio = NULL;
+	char value[KEYSTORE_MESSAGE_SIZE];
+	int length = keystore_get(key, value);
+	if (length != -1 && (bio = BIO_new(BIO_s_mem())) != NULL) {
+		BIO_write(bio, value, length);
+	}
+	return bio;
+}
+#endif
+
 static int tls_openssl_ref_count = 0;
 
 struct tls_connection {
@@ -1180,6 +1196,33 @@ static int tls_connection_ca_cert(void *_ssl_ctx, struct tls_connection *conn,
 		return 0;
 	}
 
+#ifdef ANDROID
+	if (ca_cert && strncmp("keystore://", ca_cert, 11) == 0) {
+		BIO *bio = BIO_from_keystore(&ca_cert[11]);
+		STACK_OF(X509_INFO) *stack = NULL;
+		int i;
+		if (bio) {
+			stack = PEM_X509_INFO_read_bio(bio, NULL, NULL, NULL);
+			BIO_free(bio);
+		}
+		if (!stack) {
+			return -1;
+		}
+		for (i = 0; i < sk_X509_INFO_num(stack); ++i) {
+			X509_INFO *info = sk_X509_INFO_value(stack, i);
+			if (info->x509) {
+				X509_STORE_add_cert(ssl_ctx->cert_store, info->x509);
+			}
+			if (info->crl) {
+				X509_STORE_add_crl(ssl_ctx->cert_store, info->crl);
+			}
+		}
+		sk_X509_INFO_pop_free(stack, X509_INFO_free);
+		SSL_set_verify(conn->ssl, SSL_VERIFY_PEER, tls_verify_cb);
+		return 0;
+	}
+#endif
+
 #ifdef CONFIG_NATIVE_WINDOWS
 	if (ca_cert && tls_cryptoapi_ca_cert(ssl_ctx, conn->ssl, ca_cert) ==
 	    0) {
@@ -1349,6 +1392,25 @@ static int tls_connection_client_cert(struct tls_connection *conn,
 
 	if (client_cert == NULL)
 		return -1;
+
+#ifdef ANDROID
+	if (strncmp("keystore://", client_cert, 11) == 0) {
+		BIO *bio = BIO_from_keystore(&client_cert[11]);
+		X509 *x509 = NULL;
+		int ret = -1;
+		if (bio) {
+			x509 = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+			BIO_free(bio);
+		}
+		if (x509) {
+			if (SSL_use_certificate(conn->ssl, x509) == 1) {
+				ret = 0;
+			}
+			X509_free(x509);
+		}
+		return ret;
+	}
+#endif
 
 #ifndef OPENSSL_NO_STDIO
 	if (SSL_use_certificate_file(conn->ssl, client_cert,
@@ -1741,6 +1803,23 @@ static int tls_connection_private_key(void *_ssl_ctx,
 
 		break;
 	}
+
+#ifdef ANDROID
+	if (!ok && private_key && strncmp("keystore://", private_key, 11) == 0) {
+		BIO *bio = BIO_from_keystore(&private_key[11]);
+		EVP_PKEY *pkey = NULL;
+		if (bio) {
+			pkey = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL);
+			BIO_free(bio);
+		}
+		if (pkey) {
+			if (SSL_use_PrivateKey(conn->ssl, pkey) == 1) {
+				ok = 1;
+			}
+			EVP_PKEY_free(pkey);
+		}
+	}
+#endif
 
 	while (!ok && private_key) {
 #ifndef OPENSSL_NO_STDIO

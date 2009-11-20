@@ -613,6 +613,7 @@ static void wpa_supplicant_event_scan_results(struct wpa_supplicant *wpa_s)
 	struct wpa_scan_res *selected = NULL;
 	struct wpa_ssid *ssid = NULL;
 
+	wpa_s->scan_ongoing = 0;
 	if (wpa_supplicant_get_scan_results(wpa_s) < 0) {
 		if (wpa_s->conf->ap_scan == 2)
 			return;
@@ -687,7 +688,14 @@ static void wpa_supplicant_event_scan_results(struct wpa_supplicant *wpa_s)
 		rsn_preauth_scan_results(wpa_s->wpa, wpa_s->scan_res);
 	} else {
 		wpa_printf(MSG_DEBUG, "No suitable AP found.");
+#ifdef ANDROID
+		timeout = wpa_s->scan_interval;
+		if (wpas_wps_searching(wpa_s)) {
+			timeout = 5;
+		}
+#else
 		timeout = 5;
+#endif
 		goto req_scan;
 	}
 
@@ -782,9 +790,9 @@ static void wpa_supplicant_event_associnfo(struct wpa_supplicant *wpa_s,
 		p += len;
 	}
 
-	if (!wpa_found && data->assoc_info.beacon_ies)
+	if (!wpa_found)
 		wpa_sm_set_ap_wpa_ie(wpa_s->wpa, NULL, 0);
-	if (!rsn_found && data->assoc_info.beacon_ies)
+	if (!rsn_found)
 		wpa_sm_set_ap_rsn_ie(wpa_s->wpa, NULL, 0);
 	if (wpa_found || rsn_found)
 		wpa_s->ap_ies_from_associnfo = 1;

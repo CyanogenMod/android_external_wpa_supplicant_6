@@ -39,6 +39,9 @@
 #include "blacklist.h"
 #include "wpas_glue.h"
 #include "wps_supplicant.h"
+#ifdef ANDROID
+#include <cutils/properties.h>
+#endif
 
 const char *wpa_supplicant_version =
 "wpa_supplicant v" VERSION_STR "\n"
@@ -471,12 +474,26 @@ const char * wpa_supplicant_state_txt(int state)
  */
 void wpa_supplicant_set_state(struct wpa_supplicant *wpa_s, wpa_states state)
 {
+#ifdef ANDROID
+	int network_id = -1;
+	if (wpa_s && wpa_s->current_ssid) {
+		network_id = wpa_s->current_ssid->id;
+	}
+	wpa_states reported_state = state;
+	if (state == WPA_DISCONNECTED && wpa_s->disconnected) {
+		reported_state = WPA_IDLE;
+	}
+#endif
 	wpa_printf(MSG_DEBUG, "State: %s -> %s",
 		   wpa_supplicant_state_txt(wpa_s->wpa_state),
 		   wpa_supplicant_state_txt(state));
 
 	wpa_supplicant_dbus_notify_state_change(wpa_s, state,
 						wpa_s->wpa_state);
+#ifdef ANDROID
+	wpa_msg(wpa_s, MSG_INFO, WPA_EVENT_STATE_CHANGE "id=%d state=%d",
+                network_id, reported_state);
+#endif
 
 	if (state == WPA_COMPLETED && wpa_s->new_connection) {
 #if defined(CONFIG_CTRL_IFACE) || !defined(CONFIG_NO_STDOUT_DEBUG)
@@ -581,7 +598,11 @@ int wpa_supplicant_reload_configuration(struct wpa_supplicant *wpa_s)
 
 	wpa_supplicant_clear_status(wpa_s);
 	wpa_s->reassociate = 1;
+#ifdef ANDROID
+	wpa_supplicant_req_scan(wpa_s, 2, 0);
+#else
 	wpa_supplicant_req_scan(wpa_s, 0, 0);
+#endif
 	wpa_msg(wpa_s, MSG_DEBUG, "Reconfiguration completed");
 	return 0;
 }
@@ -922,6 +943,8 @@ void wpa_supplicant_associate(struct wpa_supplicant *wpa_s,
 			ie ? wpa_ssid_txt(ie + 2, ie[1]) : "", bss->freq);
 		os_memset(wpa_s->bssid, 0, ETH_ALEN);
 		os_memcpy(wpa_s->pending_bssid, bss->bssid, ETH_ALEN);
+		wpa_s->link_speed = wpa_scan_get_max_rate(bss) * 500000;
+		wpa_s->rssi = bss->level;
 #ifdef CONFIG_IEEE80211R
 		ie = wpa_scan_get_ie(bss, WLAN_EID_MOBILITY_DOMAIN);
 		if (ie && ie[1] >= MOBILITY_DOMAIN_ID_LEN)
@@ -1932,7 +1955,17 @@ struct wpa_supplicant * wpa_supplicant_add_iface(struct wpa_global *global,
 		os_free(wpa_s);
 		return NULL;
 	}
-		
+
+#ifdef ANDROID
+    char scan_prop[PROPERTY_VALUE_MAX];
+    char *endp;
+    if (property_get("wifi.supplicant_scan_interval", scan_prop, "6") != 0) {
+        wpa_s->scan_interval = (int)strtol(scan_prop, &endp, 0);
+        if (endp == scan_prop) {
+            wpa_s->scan_interval = 6;
+        }
+    }
+#endif
 	wpa_s->next = global->ifaces;
 	global->ifaces = wpa_s;
 
@@ -2139,6 +2172,8 @@ void wpa_supplicant_deinit(struct wpa_global *global)
 
 	if (global == NULL)
 		return;
+
+	wpa_supplicant_terminate(0, global, NULL);
 
 	while (global->ifaces)
 		wpa_supplicant_remove_iface(global, global->ifaces);

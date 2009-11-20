@@ -442,6 +442,10 @@ static void wpas_wps_timeout(void *eloop_ctx, void *timeout_ctx)
 	struct wpa_supplicant *wpa_s = eloop_ctx;
 	wpa_printf(MSG_INFO, WPS_EVENT_TIMEOUT "Requested operation timed "
 		   "out");
+	if (wpa_s->key_mgmt == WPA_KEY_MGMT_WPS && wpa_s->current_ssid) {
+		wpa_supplicant_deauthenticate(wpa_s,
+					      WLAN_REASON_DEAUTH_LEAVING);
+	}
 	wpas_clear_wps(wpa_s);
 }
 

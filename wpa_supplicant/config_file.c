@@ -24,6 +24,8 @@
 #include "uuid.h"
 #include "eap_peer/eap_methods.h"
 
+#include <sys/stat.h>
+
 
 /**
  * wpa_config_get_line - Read the next configuration file line
@@ -520,13 +522,20 @@ struct wpa_config * wpa_config_read(const char *name)
 		return NULL;
 	}
 
+	/* When creating the config file, give group read/write access
+	 * to allow backup and restoring the file.
+	 */
+	chmod(name, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP);
+
 	while (wpa_config_get_line(buf, sizeof(buf), f, &line, &pos)) {
 		if (os_strcmp(pos, "network={") == 0) {
 			ssid = wpa_config_read_network(f, &line, id++);
 			if (ssid == NULL) {
 				wpa_printf(MSG_ERROR, "Line %d: failed to "
 					   "parse network block.", line);
+#ifndef WPA_IGNORE_CONFIG_ERRORS
 				errors++;
+#endif
 				continue;
 			}
 			if (head == NULL) {
@@ -563,11 +572,13 @@ struct wpa_config * wpa_config_read(const char *name)
 	config->ssid = head;
 	wpa_config_debug_dump_networks(config);
 
+#ifndef WPA_IGNORE_CONFIG_ERRORS
 	if (errors) {
 		wpa_config_free(config);
 		config = NULL;
 		head = NULL;
 	}
+#endif
 
 	return config;
 }

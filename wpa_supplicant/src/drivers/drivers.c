@@ -74,6 +74,9 @@ extern struct wpa_driver_ops wpa_driver_iphone_ops; /* driver_iphone.m */
 /* driver_roboswitch.c */
 extern struct wpa_driver_ops wpa_driver_roboswitch_ops;
 #endif /* CONFIG_DRIVER_ROBOSWITCH */
+#ifdef CONFIG_DRIVER_CUSTOM
+extern struct wpa_driver_ops wpa_driver_custom_ops;
+#endif /* CONFIG_DRIVER_CUSTOM */
 
 
 struct wpa_driver_ops *wpa_supplicant_drivers[] =
@@ -135,5 +138,8 @@ struct wpa_driver_ops *wpa_supplicant_drivers[] =
 #ifdef CONFIG_DRIVER_ROBOSWITCH
 	&wpa_driver_roboswitch_ops,
 #endif /* CONFIG_DRIVER_ROBOSWITCH */
+#ifdef CONFIG_DRIVER_CUSTOM
+	&wpa_driver_custom_ops,
+#endif /* CONFIG_DRIVER_CUSTOM */
 	NULL
 };

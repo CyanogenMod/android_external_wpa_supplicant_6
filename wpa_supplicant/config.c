@@ -223,6 +223,26 @@ static char * wpa_config_write_str(const struct parse_data *data,
 
 	return wpa_config_write_string((const u8 *) *src, len);
 }
+
+#ifdef WPA_UNICODE_SSID
+static char * wpa_config_write_str_unicode(const struct parse_data *data,
+						struct wpa_ssid *ssid)
+{
+	size_t len;
+	char **src;
+
+	src = (char **) (((u8 *) ssid) + (long) data->param1);
+	if (*src == NULL)
+		return NULL;
+
+	if (data->param2)
+		len = *((size_t *) (((u8 *) ssid) + (long) data->param2));
+	else
+		len = os_strlen(*src);
+
+	return wpa_config_write_string_ascii((const u8 *) *src, len);
+}
+#endif
 #endif /* NO_CONFIG_WRITE */
 
 
@@ -1264,6 +1284,15 @@ static char * wpa_config_write_wep_key3(const struct parse_data *data,
 	OFFSET(f), (void *) 0
 #define _INTe(f) #f, wpa_config_parse_int, wpa_config_write_int, \
 	OFFSET(eap.f), (void *) 0
+#ifdef WPA_UNICODE_SSID
+/* STR_* variants that do not force conversion to ASCII */
+#define _STR_UNICODE(f) #f, wpa_config_parse_str, wpa_config_write_str_unicode, OFFSET(f)
+#define STR_UNICODE(f) _STR_UNICODE(f), NULL, NULL, NULL, 0
+#define _STR_LEN_UNICODE(f) _STR_UNICODE(f), OFFSET(f ## _len)
+#define STR_LEN_UNICODE(f) _STR_LEN_UNICODE(f), NULL, NULL, 0
+#define _STR_RANGE_UNICODE(f, min, max) _STR_LEN_UNICODE(f), (void *) (min), (void *) (max)
+#define STR_RANGE_UNICODE(f, min, max) _STR_RANGE_UNICODE(f, min, max), 0
+#endif
 #endif /* NO_CONFIG_WRITE */
 
 /* INT: Define an integer variable */
@@ -1308,7 +1337,11 @@ static char * wpa_config_write_wep_key3(const struct parse_data *data,
  * functions.
  */
 static const struct parse_data ssid_fields[] = {
+#ifdef WPA_UNICODE_SSID
+	{ STR_RANGE_UNICODE(ssid, 0, MAX_SSID_LEN) },
+#else
 	{ STR_RANGE(ssid, 0, MAX_SSID_LEN) },
+#endif
 	{ INT_RANGE(scan_ssid, 0, 1) },
 	{ FUNC(bssid) },
 	{ FUNC_KEY(psk) },
@@ -1378,6 +1411,15 @@ static const struct parse_data ssid_fields[] = {
 	{ INT_RANGE(frequency, 0, 10000) },
 	{ INT(wpa_ptk_rekey) }
 };
+
+#ifdef WPA_UNICODE_SSID
+#undef _STR_UNICODE
+#undef STR_UNICODE
+#undef _STR_LEN_UNICODE
+#undef STR_LEN_UNICODE
+#undef _STR_RANGE_UNICODE
+#undef STR_RANGE_UNICODE
+#endif
 
 #undef OFFSET
 #undef _STR

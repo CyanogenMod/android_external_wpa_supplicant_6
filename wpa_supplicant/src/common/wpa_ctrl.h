@@ -48,6 +48,12 @@ extern "C" {
 #define WPA_EVENT_EAP_FAILURE "CTRL-EVENT-EAP-FAILURE "
 /** New scan results available */
 #define WPA_EVENT_SCAN_RESULTS "CTRL-EVENT-SCAN-RESULTS "
+/** wpa_supplicant state change */
+#define WPA_EVENT_STATE_CHANGE "CTRL-EVENT-STATE-CHANGE "
+/** AP to STA speed */
+#define WPA_EVENT_LINK_SPEED "CTRL-EVENT-LINK-SPEED "
+/** Driver state change */
+#define WPA_EVENT_DRIVER_STATE "CTRL-EVENT-DRIVER-STATE "
 
 /** WPS overlap detected in PBC mode */
 #define WPS_EVENT_OVERLAP "WPS-OVERLAP-DETECTED "
@@ -199,6 +205,17 @@ int wpa_ctrl_pending(struct wpa_ctrl *ctrl);
  * wpa_ctrl_recv() must be used for this.
  */
 int wpa_ctrl_get_fd(struct wpa_ctrl *ctrl);
+
+#ifdef ANDROID
+/**
+ * wpa_ctrl_cleanup() - Delete any local UNIX domain socket files that
+ * may be left over from clients that were previously connected to
+ * wpa_supplicant. This keeps these files from being orphaned in the
+ * event of crashes that prevented them from being removed as part
+ * of the normal orderly shutdown.
+ */
+void wpa_ctrl_cleanup();
+#endif  /* ANDROID */
 
 #ifdef CONFIG_CTRL_IFACE_UDP
 #define WPA_CTRL_IFACE_PORT 9877
