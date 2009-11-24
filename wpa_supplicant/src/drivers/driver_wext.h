@@ -43,6 +43,7 @@ struct wpa_driver_wext_data {
 	char mlmedev[IFNAMSIZ + 1];
 
 	int scan_complete_events;
+	int errors;
 };
 
 int wpa_driver_wext_get_ifflags(struct wpa_driver_wext_data *drv, int *flags);
@@ -86,6 +87,7 @@ int wpa_driver_wext_keymgmt2wext(int keymgmt);
 
 #define WPA_DRIVER_WEXT_WAIT_US		400000
 #define MAX_DRV_CMD_SIZE		248
+#define WEXT_NUMBER_SEQUENTIAL_ERRORS	4
 #endif
 
 #endif /* DRIVER_WEXT_H */
