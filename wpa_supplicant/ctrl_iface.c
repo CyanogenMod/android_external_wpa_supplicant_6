@@ -1600,7 +1600,7 @@ static int wpa_supplicant_ctrl_iface_ap_scan(
 	return 0;
 }
 
-
+#ifdef ANDROID
 static int wpa_supplicant_driver_cmd(struct wpa_supplicant *wpa_s,
                                      char *cmd, char *buf, size_t buflen)
 {
@@ -1612,7 +1612,7 @@ static int wpa_supplicant_driver_cmd(struct wpa_supplicant *wpa_s,
     }
     return( ret );
 }
-
+#endif
 
 char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
 					 char *buf, size_t *resp_len)
@@ -1748,7 +1748,7 @@ char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
 		wpa_s->disconnected = 1;
 		wpa_supplicant_disassociate(wpa_s, WLAN_REASON_DEAUTH_LEAVING);
 	} else if (os_strcmp(buf, "SCAN") == 0) {
-		if (!wpa_s->scan_ongoing) {
+		if (!wpa_s->scanning) {
 			wpa_s->scan_req = 2;
 			wpa_supplicant_req_scan(wpa_s, 0, 0);
         } else {
@@ -1798,8 +1798,10 @@ char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
 	} else if (os_strncmp(buf, "BSS ", 4) == 0) {
 		reply_len = wpa_supplicant_ctrl_iface_bss(
 			wpa_s, buf + 4, reply, reply_size);
+#ifdef ANDROID
     } else if (os_strncmp(buf, "DRIVER ", 7) == 0) {
         reply_len = wpa_supplicant_driver_cmd(wpa_s, buf + 7, reply, reply_size);
+#endif
 	} else {
 		os_memcpy(reply, "UNKNOWN COMMAND\n", 16);
 		reply_len = 16;

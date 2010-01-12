@@ -145,6 +145,7 @@ WpaGui::WpaGui(QApplication *_app, QWidget *parent, const char *, Qt::WFlags)
 
 	parse_argv();
 
+#ifndef QT_NO_SESSIONMANAGER
 	if (app->isSessionRestored()) {
 		QSettings settings("wpa_supplicant", "wpa_gui");
 		settings.beginGroup("state");
@@ -153,6 +154,7 @@ WpaGui::WpaGui(QApplication *_app, QWidget *parent, const char *, Qt::WFlags)
 			startInTray = settings.value("in_tray").toBool();
 		settings.endGroup();
 	}
+#endif
 
 	if (QSystemTrayIcon::isSystemTrayAvailable())
 		createTrayIcon(startInTray);
@@ -857,7 +859,9 @@ void WpaGui::processMsg(char *msg)
 				"Wi-Fi Protected Setup (WPS) AP\n"
 				"in active PBC mode found.");
 		wpsStatusText->setText("WPS AP in active PBC mode found");
-		wpaguiTab->setCurrentWidget(wpsTab);
+		if (textStatus->text() == "INACTIVE" ||
+		    textStatus->text() == "DISCONNECTED")
+			wpaguiTab->setCurrentWidget(wpsTab);
 		wpsInstructions->setText("Press the PBC button on the screen "
 					 "to start registration");
 	} else if (str_match(pos, WPS_EVENT_AP_AVAILABLE_PIN)) {
@@ -866,13 +870,14 @@ void WpaGui::processMsg(char *msg)
 				" in active PIN mode found.");
 		wpsStatusText->setText("WPS AP with recently selected "
 				       "registrar");
-		wpaguiTab->setCurrentWidget(wpsTab);
+		if (textStatus->text() == "INACTIVE" ||
+		    textStatus->text() == "DISCONNECTED")
+			wpaguiTab->setCurrentWidget(wpsTab);
 	} else if (str_match(pos, WPS_EVENT_AP_AVAILABLE)) {
 		showTrayMessage(QSystemTrayIcon::Information, 3,
 				"Wi-Fi Protected Setup (WPS)\n"
 				"AP detected.");
 		wpsStatusText->setText("WPS AP detected");
-		wpaguiTab->setCurrentWidget(wpsTab);
 	} else if (str_match(pos, WPS_EVENT_OVERLAP)) {
 		showTrayMessage(QSystemTrayIcon::Information, 3,
 				"Wi-Fi Protected Setup (WPS)\n"
@@ -1689,6 +1694,7 @@ void WpaGui::addInterface()
 }
 
 
+#ifndef QT_NO_SESSIONMANAGER
 void WpaGui::saveState()
 {
 	QSettings settings("wpa_supplicant", "wpa_gui");
@@ -1697,3 +1703,4 @@ void WpaGui::saveState()
 	settings.setValue("in_tray", inTray);
 	settings.endGroup();
 }
+#endif

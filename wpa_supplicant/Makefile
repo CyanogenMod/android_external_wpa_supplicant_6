@@ -35,7 +35,6 @@ mkconfig:
 	fi
 	echo CONFIG_DRIVER_HOSTAP=y >> .config
 	echo CONFIG_DRIVER_WEXT=y >> .config
-	echo CONFIG_WIRELESS_EXTENSION=y >> .config
 
 install: all
 	mkdir -p $(DESTDIR)$(BINDIR)
@@ -528,6 +527,7 @@ NEED_DH_GROUPS=y
 NEED_SHA256=y
 NEED_BASE64=y
 NEED_CRYPTO=y
+NEED_80211_COMMON=y
 
 ifdef CONFIG_WPS_UPNP
 CFLAGS += -DCONFIG_WPS_UPNP
@@ -555,6 +555,7 @@ OBJS_h += ../src/eap_server/ikev2.o
 endif
 CONFIG_IEEE8021X_EAPOL=y
 NEED_DH_GROUPS=y
+NEED_DH_GROUPS_ALL=y
 endif
 
 ifdef CONFIG_EAP_VENDOR_TEST
@@ -858,7 +859,6 @@ CFLAGS += -DNEED_SHA256
 endif
 
 ifdef CONFIG_WIRELESS_EXTENSION
-CFLAGS += -DCONFIG_WIRELESS_EXTENSION
 OBJS_d += ../src/drivers/driver_wext.o
 endif
 
@@ -977,6 +977,9 @@ endif
 
 ifdef NEED_DH_GROUPS
 OBJS += ../src/crypto/dh_groups.o
+ifdef NEED_DH_GROUPS_ALL
+CFLAGS += -DALL_DH_GROUPS
+endif
 endif
 
 ifndef NEED_FIPS186_2_PRF
@@ -1002,6 +1005,10 @@ endif
 
 ifndef CONFIG_MAIN
 CONFIG_MAIN=main
+endif
+
+ifdef CONFIG_DEBUG_SYSLOG
+CFLAGS += -DCONFIG_DEBUG_SYSLOG
 endif
 
 ifdef CONFIG_DEBUG_FILE
@@ -1145,6 +1152,16 @@ eap_ikev2.so: ../src/eap_peer/eap_ikev2.c ../src/eap_peer/ikev2.c ../src/eap_com
 	$(CC) -o $@ $(CFLAGS) -shared -rdynamic -fPIC $< \
 		-D$(*F:eap_%=eap_peer_%)_register=eap_peer_method_dynamic_init
 
+Q=@
+E=echo
+ifeq ($(V), 1)
+Q=
+E=true
+endif
+
+%.o: %.c
+	$(Q)$(CC) -c -o $@ $(CFLAGS) $<
+	@$(E) "  CC " $<
 
 wpa_supplicant.exe: wpa_supplicant
 	mv -f $< $@
@@ -1224,7 +1241,8 @@ tests: test-ms_funcs test-sha1 test-aes test-eap_sim_common test-md4 test-md5
 
 clean:
 	$(MAKE) -C ../src clean
-	rm -f core *~ *.o *.d eap_*.so $(ALL) $(WINALL)
+	rm -f core *~ *.o *.d eap_*.so $(ALL) $(WINALL) eapol_test preauth_test
+	rm -f wpa_priv
 
 %.eps: %.fig
 	fig2dev -L eps $*.fig $*.eps

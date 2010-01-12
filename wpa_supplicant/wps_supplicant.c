@@ -29,6 +29,7 @@
 #include "wpa.h"
 #include "wps_supplicant.h"
 
+
 #define WPS_PIN_SCAN_IGNORE_SEL_REG 3
 
 static void wpas_wps_timeout(void *eloop_ctx, void *timeout_ctx);
@@ -186,6 +187,7 @@ static int wpa_supplicant_wps_cred(void *ctx,
 	struct wpa_supplicant *wpa_s = ctx;
 	struct wpa_ssid *ssid = wpa_s->current_ssid;
 	u8 key_idx = 0;
+	u16 auth_type;
 
 	if ((wpa_s->conf->wps_cred_processing == 1 ||
 	     wpa_s->conf->wps_cred_processing == 2) && cred->cred_attr) {
@@ -208,13 +210,30 @@ static int wpa_supplicant_wps_cred(void *ctx,
 	if (wpa_s->conf->wps_cred_processing == 1)
 		return 0;
 
-	if (cred->auth_type != WPS_AUTH_OPEN &&
-	    cred->auth_type != WPS_AUTH_SHARED &&
-	    cred->auth_type != WPS_AUTH_WPAPSK &&
-	    cred->auth_type != WPS_AUTH_WPA2PSK) {
+	wpa_hexdump_ascii(MSG_DEBUG, "WPS: SSID", cred->ssid, cred->ssid_len);
+	wpa_printf(MSG_DEBUG, "WPS: Authentication Type 0x%x",
+		   cred->auth_type);
+	wpa_printf(MSG_DEBUG, "WPS: Encryption Type 0x%x", cred->encr_type);
+	wpa_printf(MSG_DEBUG, "WPS: Network Key Index %d", cred->key_idx);
+	wpa_hexdump_key(MSG_DEBUG, "WPS: Network Key",
+			cred->key, cred->key_len);
+	wpa_printf(MSG_DEBUG, "WPS: MAC Address " MACSTR,
+		   MAC2STR(cred->mac_addr));
+
+	auth_type = cred->auth_type;
+	if (auth_type == (WPS_AUTH_WPAPSK | WPS_AUTH_WPA2PSK)) {
+		wpa_printf(MSG_DEBUG, "WPS: Workaround - convert mixed-mode "
+			   "auth_type into WPA2PSK");
+		auth_type = WPS_AUTH_WPA2PSK;
+	}
+
+	if (auth_type != WPS_AUTH_OPEN &&
+	    auth_type != WPS_AUTH_SHARED &&
+	    auth_type != WPS_AUTH_WPAPSK &&
+	    auth_type != WPS_AUTH_WPA2PSK) {
 		wpa_printf(MSG_DEBUG, "WPS: Ignored credentials for "
-			   "unsupported authentication type %d",
-			   cred->auth_type);
+			   "unsupported authentication type 0x%x",
+			   auth_type);
 		return 0;
 	}
 
@@ -288,7 +307,7 @@ static int wpa_supplicant_wps_cred(void *ctx,
 		break;
 	}
 
-	switch (cred->auth_type) {
+	switch (auth_type) {
 	case WPS_AUTH_OPEN:
 		ssid->auth_alg = WPA_AUTH_ALG_OPEN;
 		ssid->key_mgmt = WPA_KEY_MGMT_NONE;
@@ -400,6 +419,10 @@ static void wpa_supplicant_wps_event(void *ctx, enum wps_event event,
 		break;
 	case WPS_EV_PWD_AUTH_FAIL:
 		break;
+	case WPS_EV_PBC_OVERLAP:
+		break;
+	case WPS_EV_PBC_TIMEOUT:
+		break;
 	}
 }
 
@@ -442,10 +465,6 @@ static void wpas_wps_timeout(void *eloop_ctx, void *timeout_ctx)
 	struct wpa_supplicant *wpa_s = eloop_ctx;
 	wpa_printf(MSG_INFO, WPS_EVENT_TIMEOUT "Requested operation timed "
 		   "out");
-	if (wpa_s->key_mgmt == WPA_KEY_MGMT_WPS && wpa_s->current_ssid) {
-		wpa_supplicant_deauthenticate(wpa_s,
-					      WLAN_REASON_DEAUTH_LEAVING);
-	}
 	wpas_clear_wps(wpa_s);
 }
 
@@ -470,7 +489,7 @@ static struct wpa_ssid * wpas_wps_add_network(struct wpa_supplicant *wpa_s,
 
 	if (bssid) {
 		size_t i;
-		struct wpa_scan_res *res;
+		int count = 0;
 
 		os_memcpy(ssid->bssid, bssid, ETH_ALEN);
 		ssid->bssid_set = 1;
@@ -482,6 +501,7 @@ static struct wpa_ssid * wpas_wps_add_network(struct wpa_supplicant *wpa_s,
 
 		for (i = 0; i < wpa_s->scan_res->num; i++) {
 			const u8 *ie;
+			struct wpa_scan_res *res;
 
 			res = wpa_s->scan_res->res[i];
 			if (os_memcmp(bssid, res->bssid, ETH_ALEN) != 0)
@@ -496,7 +516,18 @@ static struct wpa_ssid * wpas_wps_add_network(struct wpa_supplicant *wpa_s,
 				break;
 			os_memcpy(ssid->ssid, ie + 2, ie[1]);
 			ssid->ssid_len = ie[1];
-			break;
+			wpa_hexdump_ascii(MSG_DEBUG, "WPS: Picked SSID from "
+					  "scan results",
+					  ssid->ssid, ssid->ssid_len);
+			count++;
+		}
+
+		if (count > 1) {
+			wpa_printf(MSG_DEBUG, "WPS: More than one SSID found "
+				   "for the AP; use wildcard");
+			os_free(ssid->ssid);
+			ssid->ssid = NULL;
+			ssid->ssid_len = 0;
 		}
 	}
 

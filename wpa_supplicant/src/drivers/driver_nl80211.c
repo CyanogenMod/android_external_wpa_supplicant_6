@@ -241,8 +241,9 @@ static int wpa_driver_nl80211_send_oper_ifla(
 	req.ifinfo.ifi_change = 0;
 
 	if (linkmode != -1) {
-		rta = (struct rtattr *)
-			((char *) &req + NLMSG_ALIGN(req.hdr.nlmsg_len));
+		rta = aliasing_hide_typecast(
+			((char *) &req + NLMSG_ALIGN(req.hdr.nlmsg_len)),
+			struct rtattr);
 		rta->rta_type = IFLA_LINKMODE;
 		rta->rta_len = RTA_LENGTH(sizeof(char));
 		*((char *) RTA_DATA(rta)) = linkmode;
@@ -981,6 +982,9 @@ static int process_event(struct nl_msg *msg, void *arg)
 	}
 
 	switch (gnlh->cmd) {
+	case NL80211_CMD_TRIGGER_SCAN:
+		wpa_printf(MSG_DEBUG, "nl80211: Scan trigger");
+		break;
 	case NL80211_CMD_NEW_SCAN_RESULTS:
 		wpa_printf(MSG_DEBUG, "nl80211: New scan results available");
 		drv->scan_complete_events = 1;
@@ -1517,6 +1521,12 @@ wpa_driver_nl80211_finish_drv_init(struct wpa_driver_nl80211_data *drv)
 {
 	int flags;
 
+	drv->ifindex = if_nametoindex(drv->ifname);
+
+	if (wpa_driver_nl80211_set_mode(drv, 0) < 0) {
+		printf("Could not configure driver to use managed mode\n");
+	}
+
 	if (wpa_driver_nl80211_get_ifflags(drv, &flags) != 0)
 		printf("Could not get interface '%s' flags\n", drv->ifname);
 	else if (!(flags & IFF_UP)) {
@@ -1531,13 +1541,7 @@ wpa_driver_nl80211_finish_drv_init(struct wpa_driver_nl80211_data *drv)
 	 */
 	wpa_driver_nl80211_flush_pmkid(drv);
 
-	if (wpa_driver_nl80211_set_mode(drv, 0) < 0) {
-		printf("Could not configure driver to use managed mode\n");
-	}
-
 	wpa_driver_nl80211_get_range(drv);
-
-	drv->ifindex = if_nametoindex(drv->ifname);
 
 	wpa_driver_nl80211_send_oper_ifla(drv, 1, IF_OPER_DORMANT);
 }
@@ -1844,6 +1848,9 @@ static int wpa_driver_nl80211_get_range(void *priv)
 			drv->capa.enc |= WPA_DRIVER_CAPA_ENC_TKIP;
 		if (range->enc_capa & IW_ENC_CAPA_CIPHER_CCMP)
 			drv->capa.enc |= WPA_DRIVER_CAPA_ENC_CCMP;
+		drv->capa.auth = WPA_DRIVER_AUTH_OPEN |
+			WPA_DRIVER_AUTH_SHARED |
+			WPA_DRIVER_AUTH_LEAP;
 		wpa_printf(MSG_DEBUG, "  capabilities: key_mgmt 0x%x enc 0x%x",
 			   drv->capa.key_mgmt, drv->capa.enc);
 	} else {
@@ -1907,6 +1914,11 @@ static int wpa_driver_nl80211_set_key(void *priv, wpa_alg alg,
 		case WPA_ALG_CCMP:
 			NLA_PUT_U32(msg, NL80211_ATTR_KEY_CIPHER, 0x000FAC04);
 			break;
+#ifdef CONFIG_IEEE80211W
+		case WPA_ALG_IGTK:
+			NLA_PUT_U32(msg, NL80211_ATTR_KEY_CIPHER, 0x000FAC06);
+			break;
+#endif /* CONFIG_IEEE80211W */
 		default:
 			nlmsg_free(msg);
 			return -1;
@@ -2252,7 +2264,8 @@ static int wpa_driver_nl80211_set_mode(void *priv, int mode)
 		goto try_again;
 
 nla_put_failure:
-	wpa_printf(MSG_ERROR, "nl80211: Failed to set interface mode");
+	wpa_printf(MSG_ERROR, "nl80211: Failed to set interface mode: %d (%s)",
+		   ret, strerror(-ret));
 	return -1;
 
 try_again:
@@ -2277,7 +2290,8 @@ try_again:
 		ret = send_and_recv_msgs(drv, msg, NULL, NULL);
 		if (ret) {
 			wpa_printf(MSG_ERROR, "Failed to set interface %s "
-				   "mode", drv->ifname);
+				   "mode(try_again): %d (%s)",
+				   drv->ifname, ret, strerror(-ret));
 		}
 
 		/* Ignore return value of get_ifflags to ensure that the device
@@ -2512,7 +2526,7 @@ static int phy_info_handler(struct nl_msg *msg, void *arg)
 
 			/* crude heuristic */
 			if (mode->channels[idx].freq < 4000) {
-				if (mode->channels[idx].freq == 2848)
+				if (mode->channels[idx].freq == 2484)
 					mode->channels[idx].chan = 14;
 				else
 					mode->channels[idx].chan =

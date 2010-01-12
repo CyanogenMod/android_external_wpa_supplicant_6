@@ -550,6 +550,7 @@ NEED_DH_GROUPS=y
 NEED_SHA256=y
 NEED_BASE64=y
 NEED_CRYPTO=y
+NEED_80211_COMMON=y
 
 ifdef CONFIG_WPS_UPNP
 L_CFLAGS += -DCONFIG_WPS_UPNP
@@ -577,6 +578,7 @@ OBJS_h += src/eap_server/ikev2.c
 endif
 CONFIG_IEEE8021X_EAPOL=y
 NEED_DH_GROUPS=y
+NEED_DH_GROUPS_ALL=y
 endif
 
 ifdef CONFIG_EAP_VENDOR_TEST
@@ -880,7 +882,6 @@ L_CFLAGS += -DNEED_SHA256
 endif
 
 ifdef CONFIG_WIRELESS_EXTENSION
-L_CFLAGS += -DCONFIG_WIRELESS_EXTENSION
 OBJS_d += src/drivers/driver_wext.c
 endif
 
@@ -999,6 +1000,9 @@ endif
 
 ifdef NEED_DH_GROUPS
 OBJS += src/crypto/dh_groups.c
+ifdef NEED_DH_GROUPS_ALL
+L_CFLAGS += -DALL_DH_GROUPS
+endif
 endif
 
 ifndef NEED_FIPS186_2_PRF

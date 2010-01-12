@@ -11,6 +11,10 @@
  * license.
  *
  * See README and COPYING for more details.
+ *
+ * Please note that madwifi supports WPA configuration via Linux wireless
+ * extensions and if the kernel includes support for this, driver_wext.c should
+ * be used instead of this driver wrapper.
  */
 
 #include "includes.h"

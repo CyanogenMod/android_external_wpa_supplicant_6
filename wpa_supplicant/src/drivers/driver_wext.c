@@ -39,6 +39,7 @@
 static int wpa_driver_wext_flush_pmkid(void *priv);
 static int wpa_driver_wext_get_range(void *priv);
 static void wpa_driver_wext_finish_drv_init(struct wpa_driver_wext_data *drv);
+static void wpa_driver_wext_disconnect(struct wpa_driver_wext_data *drv);
 
 
 static int wpa_driver_wext_send_oper_ifla(struct wpa_driver_wext_data *drv,
@@ -68,8 +69,9 @@ static int wpa_driver_wext_send_oper_ifla(struct wpa_driver_wext_data *drv,
 	req.ifinfo.ifi_change = 0;
 
 	if (linkmode != -1) {
-		rta = (struct rtattr *)
-			((char *) &req + NLMSG_ALIGN(req.hdr.nlmsg_len));
+		rta = aliasing_hide_typecast(
+			((char *) &req + NLMSG_ALIGN(req.hdr.nlmsg_len)),
+			struct rtattr);
 		rta->rta_type = IFLA_LINKMODE;
 		rta->rta_len = RTA_LENGTH(sizeof(char));
 		*((char *) RTA_DATA(rta)) = linkmode;
@@ -994,6 +996,13 @@ static void wpa_driver_wext_finish_drv_init(struct wpa_driver_wext_data *drv)
 
 	wpa_driver_wext_get_range(drv);
 
+	/*
+	 * Unlock the driver's BSSID and force to a random SSID to clear any
+	 * previous association the driver might have when the supplicant
+	 * starts up.
+	 */
+	wpa_driver_wext_disconnect(drv);
+
 	drv->ifindex = if_nametoindex(drv->ifname);
 
 	if (os_strncmp(drv->ifname, "wlan", 4) == 0) {
@@ -1033,8 +1042,7 @@ void wpa_driver_wext_deinit(void *priv)
 	 * Clear possibly configured driver parameters in order to make it
 	 * easier to use the driver after wpa_supplicant has been terminated.
 	 */
-	(void) wpa_driver_wext_set_bssid(drv,
-					 (u8 *) "\x00\x00\x00\x00\x00\x00");
+	wpa_driver_wext_disconnect(drv);
 
 	wpa_driver_wext_send_oper_ifla(priv, 0, IF_OPER_UP);
 
@@ -1639,6 +1647,9 @@ static int wpa_driver_wext_get_range(void *priv)
 			drv->capa.enc |= WPA_DRIVER_CAPA_ENC_CCMP;
 		if (range->enc_capa & IW_ENC_CAPA_4WAY_HANDSHAKE)
 			drv->capa.flags |= WPA_DRIVER_FLAGS_4WAY_HANDSHAKE;
+		drv->capa.auth = WPA_DRIVER_AUTH_OPEN |
+			WPA_DRIVER_AUTH_SHARED |
+			WPA_DRIVER_AUTH_LEAP;
 
 		wpa_printf(MSG_DEBUG, "  capabilities: key_mgmt 0x%x enc 0x%x "
 			   "flags 0x%x",
@@ -1931,21 +1942,36 @@ static int wpa_driver_wext_mlme(struct wpa_driver_wext_data *drv,
 
 static void wpa_driver_wext_disconnect(struct wpa_driver_wext_data *drv)
 {
+	struct iwreq iwr;
 	const u8 null_bssid[ETH_ALEN] = { 0, 0, 0, 0, 0, 0 };
 	u8 ssid[32];
 	int i;
 
 	/*
-	 * Clear the BSSID selection and set a random SSID to make sure the
-	 * driver will not be trying to associate with something even if it
-	 * does not understand SIOCSIWMLME commands (or tries to associate
-	 * automatically after deauth/disassoc).
+	 * Only force-disconnect when the card is in infrastructure mode,
+	 * otherwise the driver might interpret the cleared BSSID and random
+	 * SSID as an attempt to create a new ad-hoc network.
 	 */
-	wpa_driver_wext_set_bssid(drv, null_bssid);
+	os_memset(&iwr, 0, sizeof(iwr));
+	os_strlcpy(iwr.ifr_name, drv->ifname, IFNAMSIZ);
+	if (ioctl(drv->ioctl_sock, SIOCGIWMODE, &iwr) < 0) {
+		perror("ioctl[SIOCGIWMODE]");
+		iwr.u.mode = IW_MODE_INFRA;
+	}
 
-	for (i = 0; i < 32; i++)
-		ssid[i] = rand() & 0xFF;
-	wpa_driver_wext_set_ssid(drv, ssid, 32);
+	if (iwr.u.mode == IW_MODE_INFRA) {
+		/*
+		 * Clear the BSSID selection and set a random SSID to make sure
+		 * the driver will not be trying to associate with something
+		 * even if it does not understand SIOCSIWMLME commands (or
+		 * tries to associate automatically after deauth/disassoc).
+		 */
+		wpa_driver_wext_set_bssid(drv, null_bssid);
+
+		for (i = 0; i < 32; i++)
+			ssid[i] = rand() & 0xFF;
+		wpa_driver_wext_set_ssid(drv, ssid, 32);
+	}
 }
 
 
@@ -1955,8 +1981,8 @@ static int wpa_driver_wext_deauthenticate(void *priv, const u8 *addr,
 	struct wpa_driver_wext_data *drv = priv;
 	int ret;
 	wpa_printf(MSG_DEBUG, "%s", __FUNCTION__);
-	wpa_driver_wext_disconnect(drv);
 	ret = wpa_driver_wext_mlme(drv, addr, IW_MLME_DEAUTH, reason_code);
+	wpa_driver_wext_disconnect(drv);
 	return ret;
 }
 

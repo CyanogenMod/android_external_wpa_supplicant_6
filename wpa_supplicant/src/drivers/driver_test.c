@@ -1171,7 +1171,7 @@ wpa_driver_test_get_interfaces(void *global_priv)
 	return iface;
 }
 
-
+#ifdef ANDROID
 int wpa_driver_test_driver_cmd( void *priv, char *cmd, char *buf, size_t buf_len )
 {
     struct wpa_driver_test_data *drv = (struct wpa_driver_test_data *)priv;
@@ -1201,7 +1201,7 @@ int wpa_driver_test_driver_cmd( void *priv, char *cmd, char *buf, size_t buf_len
     }
     return ret;
 }
-
+#endif
 
 const struct wpa_driver_ops wpa_driver_test_ops = {
 	"test",
@@ -1258,5 +1258,7 @@ const struct wpa_driver_ops wpa_driver_test_ops = {
 	wpa_driver_test_global_deinit,
 	wpa_driver_test_init2,
 	wpa_driver_test_get_interfaces,
+#ifdef ANDROID
 	wpa_driver_test_driver_cmd
+#endif
 };

@@ -131,7 +131,7 @@ struct wpa_scan_results {
  * @ifname: Interface name that can be used with init() or init2()
  * @desc: Human readable adapter description (e.g., vendor/model) or NULL if
  *	not available
- * @drv_bame: struct wpa_driver_ops::name (note: unlike other strings, this one
+ * @drv_name: struct wpa_driver_ops::name (note: unlike other strings, this one
  *	is not an allocated copy, i.e., get_interfaces() caller will not free
  *	this)
  */
@@ -702,7 +702,7 @@ struct wpa_driver_ops {
 	int (*flush_pmkid)(void *priv);
 
 	/**
-	 * flush_pmkid - Flush PMKSA cache
+	 * get_capa - Get driver capabilities
 	 * @priv: private driver interface data
 	 *
 	 * Returns: 0 on success, -1 on failure
@@ -1018,6 +1018,7 @@ struct wpa_driver_ops {
 	 */
 	struct wpa_interface_info * (*get_interfaces)(void *global_priv);
 
+#ifdef ANDROID
     /**
      * driver_cmd - execute driver-specific command
      * @priv: private driver interface data from init()
@@ -1029,6 +1030,7 @@ struct wpa_driver_ops {
 	 *
 	 */
      int (*driver_cmd)(void *priv, char *cmd, char *buf, size_t buf_len);
+#endif
 };
 
 /* Function to check whether a driver is for wired connections */
