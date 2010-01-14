@@ -952,9 +952,10 @@ void * wpa_driver_wext_init(void *ctx, const char *ifname)
 	drv->event_sock = s;
 
 	drv->mlme_sock = -1;
-
+#ifdef ANDROID
 	drv->errors = 0;
-
+	drv->driver_is_loaded = TRUE;
+#endif
 	wpa_driver_wext_finish_drv_init(drv);
 
 	return drv;
@@ -2407,6 +2408,11 @@ static int wpa_driver_priv_driver_cmd( void *priv, char *cmd, char *buf, size_t 
 
 	wpa_printf(MSG_DEBUG, "%s %s len = %d", __func__, cmd, buf_len);
 
+	if (!drv->driver_is_loaded && (os_strcasecmp(cmd, "START") != 0)) {
+		wpa_printf(MSG_ERROR,"WEXT: Driver not initialized yet");
+		return -1;
+	}
+
 	if (os_strcasecmp(cmd, "RSSI-APPROX") == 0) {
 		os_strncpy(cmd, "RSSI", MAX_DRV_CMD_SIZE);
 	}
@@ -2456,13 +2462,15 @@ static int wpa_driver_priv_driver_cmd( void *priv, char *cmd, char *buf, size_t 
 		    (os_strcasecmp(cmd, "MACADDR") == 0)) {
 			ret = strlen(buf);
 		}
-/*		else if (os_strcasecmp(cmd, "START") == 0) {
-			os_sleep(0, WPA_DRIVER_WEXT_WAIT_US);
-			wpa_msg(drv->ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "STARTED");
+		else if (os_strcasecmp(cmd, "START") == 0) {
+			drv->driver_is_loaded = TRUE;
+			/* os_sleep(0, WPA_DRIVER_WEXT_WAIT_US);
+			wpa_msg(drv->ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "STARTED"); */
 		}
 		else if (os_strcasecmp(cmd, "STOP") == 0) {
-			wpa_msg(drv->ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "STOPPED");
-		}*/
+			drv->driver_is_loaded = FALSE;
+			/* wpa_msg(drv->ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "STOPPED"); */
+		}
 		wpa_printf(MSG_DEBUG, "%s %s len = %d, %d", __func__, buf, ret, strlen(buf));
 	}
 	return ret;

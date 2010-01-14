@@ -43,7 +43,10 @@ struct wpa_driver_wext_data {
 	char mlmedev[IFNAMSIZ + 1];
 
 	int scan_complete_events;
+#ifdef ANDROID
 	int errors;
+	int driver_is_loaded;
+#endif
 };
 
 int wpa_driver_wext_get_ifflags(struct wpa_driver_wext_data *drv, int *flags);
