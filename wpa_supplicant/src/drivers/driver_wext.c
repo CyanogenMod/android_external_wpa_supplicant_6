@@ -2441,7 +2441,7 @@ static int wpa_driver_priv_driver_cmd( void *priv, char *cmd, char *buf, size_t 
 	}
 
 	if (ret < 0) {
-		wpa_printf(MSG_ERROR, "%s failed", __func__);
+		wpa_printf(MSG_ERROR, "%s failed (%d): %s", __func__, ret, cmd);
 		drv->errors++;
 		if (drv->errors > WEXT_NUMBER_SEQUENTIAL_ERRORS) {
 			drv->errors = 0;
