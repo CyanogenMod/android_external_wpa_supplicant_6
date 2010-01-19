@@ -501,8 +501,8 @@ void wpa_supplicant_set_state(struct wpa_supplicant *wpa_s, wpa_states state)
 	wpa_supplicant_dbus_notify_state_change(wpa_s, state,
 						wpa_s->wpa_state);
 #ifdef ANDROID
-	wpa_msg(wpa_s, MSG_INFO, WPA_EVENT_STATE_CHANGE "id=%d state=%d",
-                network_id, reported_state);
+	wpa_msg(wpa_s, MSG_INFO, WPA_EVENT_STATE_CHANGE "id=%d state=%d BSSID=" MACSTR,
+		network_id, reported_state, MAC2STR(wpa_s->bssid));
 #endif
 
 	if (state == WPA_COMPLETED && wpa_s->new_connection) {
