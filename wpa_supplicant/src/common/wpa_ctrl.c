@@ -184,7 +184,7 @@ void wpa_ctrl_close(struct wpa_ctrl *ctrl)
  * event of crashes that prevented them from being removed as part
  * of the normal orderly shutdown.
  */
-void wpa_ctrl_cleanup()
+void wpa_ctrl_cleanup(void)
 {
     DIR *dir;
     struct dirent entry;
@@ -218,7 +218,7 @@ void wpa_ctrl_cleanup()
 
 #else /* CONFIG_CTRL_IFACE_UNIX */
 #ifdef ANDROID
-void wpa_ctrl_cleanup()
+void wpa_ctrl_cleanup(void)
 {
 }
 #endif /* ANDROID */
