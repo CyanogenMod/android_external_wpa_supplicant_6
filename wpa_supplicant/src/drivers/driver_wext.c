@@ -2119,6 +2119,10 @@ int wpa_driver_wext_associate(void *priv,
 
 	wpa_printf(MSG_DEBUG, "%s", __FUNCTION__);
 
+#ifdef ANDROID
+	drv->skip_disconnect = 0;
+#endif
+
 	if (wpa_driver_wext_get_ifflags(drv, &flags) == 0) {
 		if (!(flags & IFF_UP)) {
 			wpa_driver_wext_set_ifflags(drv, flags | IFF_UP);
