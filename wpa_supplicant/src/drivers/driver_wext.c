@@ -1956,8 +1956,10 @@ static void wpa_driver_wext_disconnect(struct wpa_driver_wext_data *drv)
 {
 	struct iwreq iwr;
 	const u8 null_bssid[ETH_ALEN] = { 0, 0, 0, 0, 0, 0 };
+#ifndef ANDROID
 	u8 ssid[32];
 	int i;
+#endif
 
 	/*
 	 * Only force-disconnect when the card is in infrastructure mode,
@@ -1979,10 +1981,11 @@ static void wpa_driver_wext_disconnect(struct wpa_driver_wext_data *drv)
 		 * tries to associate automatically after deauth/disassoc).
 		 */
 		wpa_driver_wext_set_bssid(drv, null_bssid);
-
+#ifndef ANDROID
 		for (i = 0; i < 32; i++)
 			ssid[i] = rand() & 0xFF;
 		wpa_driver_wext_set_ssid(drv, ssid, 32);
+#endif
 	}
 }
 
