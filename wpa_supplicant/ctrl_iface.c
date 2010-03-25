@@ -1603,7 +1603,7 @@ static int wpa_supplicant_ctrl_iface_ap_scan(
 #ifdef ANDROID
 	if ((ap_scan == 2) && (wpa_s->wpa_state != WPA_COMPLETED)) {
 		wpa_printf(MSG_ERROR, "ap_scan = %d", wpa_s->conf->ap_scan);
-		return -1;
+		return 0;
 	}
 	wpa_printf(MSG_ERROR, "ap_scan = %d", ap_scan);
 #endif
@@ -1638,10 +1638,10 @@ char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
 		wpa_hexdump_ascii_key(MSG_DEBUG, "RX ctrl_iface",
 				      (const u8 *) buf, os_strlen(buf));
 	} else {
-        if (os_strcmp(buf, "PING") != 0) {
+		if (os_strcmp(buf, "PING") != 0) {
 		    wpa_hexdump_ascii(MSG_DEBUG, "RX ctrl_iface",
 				  (const u8 *) buf, os_strlen(buf));
-        }
+		}
 	}
 
 	reply = os_malloc(reply_size);
