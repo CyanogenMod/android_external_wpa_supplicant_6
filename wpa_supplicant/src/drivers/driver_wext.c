@@ -1123,6 +1123,8 @@ int wpa_driver_wext_scan(void *priv, const u8 *ssid, size_t ssid_len)
 	if (wpa_s->prev_scan_ssid != BROADCAST_SSID_SCAN) {
 		scan_probe_flag = wpa_s->prev_scan_ssid->scan_ssid;
 	}
+	wpa_printf(MSG_ERROR, "%s: specific scan = %d", __func__,
+		(scan_probe_flag && (ssid && ssid_len)) ? 1 : 0);
 	if (scan_probe_flag && (ssid && ssid_len)) {
 #else
 	if (ssid && ssid_len) {
