@@ -2479,7 +2479,8 @@ static int wpa_driver_priv_driver_cmd( void *priv, char *cmd, char *buf, size_t 
 		ret = 0;
 		if ((os_strcasecmp(cmd, "RSSI") == 0) ||
 		    (os_strcasecmp(cmd, "LINKSPEED") == 0) ||
-		    (os_strcasecmp(cmd, "MACADDR") == 0)) {
+		    (os_strcasecmp(cmd, "MACADDR") == 0) ||
+		    (os_strcasecmp(cmd, "GETPOWER") == 0)) {
 			ret = strlen(buf);
 		}
 		else if (os_strcasecmp(cmd, "START") == 0) {
