@@ -363,6 +363,8 @@ wpa_driver_wext_event_wireless_custom(void *ctx, char *custom)
 		wpa_msg(ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "STOPPED");
 	} else if (os_strncmp(custom, "START", 5) == 0) {
 		wpa_msg(ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "STARTED");
+	} else if (os_strncmp(custom, "HANG", 4) == 0) {
+		wpa_msg(ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "HANGED");
 #endif /* ANDROID */
 	}
 }
