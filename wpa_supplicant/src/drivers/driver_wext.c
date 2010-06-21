@@ -1148,7 +1148,7 @@ int wpa_driver_wext_scan(void *priv, const u8 *ssid, size_t ssid_len)
 
 	/* Not all drivers generate "scan completed" wireless event, so try to
 	 * read results after a timeout. */
-	timeout = 5;
+	timeout = 10;
 	if (drv->scan_complete_events) {
 		/*
 		 * The driver seems to deliver SIOCGIWSCAN events to notify
@@ -2511,6 +2511,7 @@ const struct wpa_driver_ops wpa_driver_wext_ops = {
 	.set_countermeasures = wpa_driver_wext_set_countermeasures,
 	.set_drop_unencrypted = wpa_driver_wext_set_drop_unencrypted,
 	.scan = wpa_driver_wext_scan,
+	.combo_scan = NULL,
 	.get_scan_results2 = wpa_driver_wext_get_scan_results,
 	.deauthenticate = wpa_driver_wext_deauthenticate,
 	.disassociate = wpa_driver_wext_disassociate,

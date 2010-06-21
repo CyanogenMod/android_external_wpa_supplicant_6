@@ -421,6 +421,7 @@ void wpa_supplicant_req_scan(struct wpa_supplicant *wpa_s, int sec, int usec);
 void wpa_supplicant_cancel_scan(struct wpa_supplicant *wpa_s);
 void wpa_supplicant_notify_scanning(struct wpa_supplicant *wpa_s,
 				    int scanning);
+int wpa_drv_scan(struct wpa_supplicant *wpa_s, struct wpa_ssid **ssid_prt);
 
 /* events.c */
 void wpa_supplicant_mark_disassoc(struct wpa_supplicant *wpa_s);
@@ -503,15 +504,6 @@ static inline int wpa_drv_associate(struct wpa_supplicant *wpa_s,
 {
 	if (wpa_s->driver->associate) {
 		return wpa_s->driver->associate(wpa_s->drv_priv, params);
-	}
-	return -1;
-}
-
-static inline int wpa_drv_scan(struct wpa_supplicant *wpa_s, const u8 *ssid,
-			       size_t ssid_len)
-{
-	if (wpa_s->driver->scan) {
-		return wpa_s->driver->scan(wpa_s->drv_priv, ssid, ssid_len);
 	}
 	return -1;
 }

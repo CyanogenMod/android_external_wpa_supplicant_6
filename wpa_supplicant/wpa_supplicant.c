@@ -1484,6 +1484,30 @@ struct wpa_ssid * wpa_supplicant_get_ssid(struct wpa_supplicant *wpa_s)
 	return NULL;
 }
 
+int wpa_drv_scan(struct wpa_supplicant *wpa_s, struct wpa_ssid **ssid_ptr)
+{
+	u8 *ssid_nm = NULL;
+	size_t ssid_len = 0;
+	int ret = -1;
+
+	if (wpa_s->driver->combo_scan) {
+		ret = wpa_s->driver->combo_scan(wpa_s->drv_priv, ssid_ptr,
+						wpa_s->conf->ssid);
+		if (!ret) {
+			wpa_s->prev_scan_ssid = (*ssid_ptr) ?
+					(*ssid_ptr) : BROADCAST_SSID_SCAN;
+		}
+	}
+	else if (wpa_s->driver->scan) {
+		if (*ssid_ptr) {
+			ssid_nm = (*ssid_ptr)->ssid;
+			ssid_len = (*ssid_ptr)->ssid_len;
+		}
+
+		ret = wpa_s->driver->scan(wpa_s->drv_priv, ssid_nm, ssid_len);
+	}
+	return ret;
+}
 
 static int wpa_supplicant_set_driver(struct wpa_supplicant *wpa_s,
 				     const char *name)
