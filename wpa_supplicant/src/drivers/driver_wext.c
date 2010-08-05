@@ -1197,12 +1197,13 @@ int wpa_driver_wext_combo_scan(void *priv, struct wpa_ssid **ssid_ptr,
 
 	wpa_printf(MSG_DEBUG, "%s: Start", __func__);
 
+	/* Set list of SSIDs */
 	ssid_orig = (*ssid_ptr);
 	ssid = (*ssid_ptr) ? (*ssid_ptr) : ssid_conf;
 	bp = WEXT_CSCAN_HEADER_SIZE;
 	os_memcpy(buf, WEXT_CSCAN_HEADER, bp);
 	while (i < WEXT_CSCAN_AMOUNT) {
-		if ((bp + IW_ESSID_MAX_SIZE + 4) >= (int)sizeof(buf))
+		if ((bp + IW_ESSID_MAX_SIZE + 10) >= (int)sizeof(buf))
 			break;
 		*ssid_ptr = ssid;
 		if (ssid == NULL)
@@ -1218,8 +1219,20 @@ int wpa_driver_wext_combo_scan(void *priv, struct wpa_ssid **ssid_ptr,
 		ssid = ssid->next;
 	}
 
+	/* Set list of channels */
 	buf[bp++] = WEXT_CSCAN_CHANNEL_SECTION;
 	buf[bp++] = 0;
+
+	/* Set passive dwell time (default is 250) */
+	buf[bp++] = WEXT_CSCAN_PASV_DWELL_SECTION;
+	buf[bp++] = (u8)WEXT_CSCAN_PASV_DWELL_TIME;
+	buf[bp++] = (u8)(WEXT_CSCAN_PASV_DWELL_TIME >> 8);
+
+	/* Set home dwell time (default is 40) */
+	buf[bp++] = WEXT_CSCAN_HOME_DWELL_SECTION;
+	buf[bp++] = (u8)WEXT_CSCAN_HOME_DWELL_TIME;
+	buf[bp++] = (u8)(WEXT_CSCAN_HOME_DWELL_TIME >> 8);
+
 	os_memset(&iwr, 0, sizeof(iwr));
 	os_strncpy(iwr.ifr_name, drv->ifname, IFNAMSIZ);
 	iwr.u.data.pointer = buf;
@@ -2530,22 +2543,19 @@ static int wpa_driver_priv_driver_cmd( void *priv, char *cmd, char *buf, size_t 
 
 	if (os_strcasecmp(cmd, "RSSI-APPROX") == 0) {
 		os_strncpy(cmd, "RSSI", MAX_DRV_CMD_SIZE);
-	}
-	else if( os_strncasecmp(cmd, "SCAN-CHANNELS", 13) == 0 ) {
+	} else if( os_strncasecmp(cmd, "SCAN-CHANNELS", 13) == 0 ) {
 		int no_of_chan;
 
 		no_of_chan = atoi(cmd + 13);
 		os_snprintf(cmd, MAX_DRV_CMD_SIZE, "COUNTRY %s",
 			wpa_driver_get_country_code(no_of_chan));
-	}
-	else if (os_strcasecmp(cmd, "STOP") == 0) {
+	} else if (os_strcasecmp(cmd, "STOP") == 0) {
 		if ((wpa_driver_wext_get_ifflags(drv, &flags) == 0) &&
 		    (flags & IFF_UP)) {
 			wpa_printf(MSG_ERROR, "WEXT: %s when iface is UP", cmd);
 			wpa_driver_wext_set_ifflags(drv, flags & ~IFF_UP);
 		}
-	}
-	else if( os_strcasecmp(cmd, "RELOAD") == 0 ) {
+	} else if( os_strcasecmp(cmd, "RELOAD") == 0 ) {
 		wpa_printf(MSG_DEBUG,"Reload command");
 		wpa_msg(drv->ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "HANGED");
 		return ret;
@@ -2566,8 +2576,7 @@ static int wpa_driver_priv_driver_cmd( void *priv, char *cmd, char *buf, size_t 
 			drv->errors = 0;
 			wpa_msg(drv->ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "HANGED");
 		}
-	}
-	else {
+	} else {
 		drv->errors = 0;
 		ret = 0;
 		if ((os_strcasecmp(cmd, "RSSI") == 0) ||
