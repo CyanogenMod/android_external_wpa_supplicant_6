@@ -966,7 +966,7 @@ void * wpa_driver_wext_init(void *ctx, const char *ifname)
 	drv->mlme_sock = -1;
 #ifdef ANDROID
 	drv->errors = 0;
-	drv->driver_is_loaded = TRUE;
+	drv->driver_is_started = TRUE;
 	drv->skip_disconnect = 0;
 #endif
 	wpa_driver_wext_finish_drv_init(drv);
@@ -1076,7 +1076,6 @@ void wpa_driver_wext_deinit(void *priv)
 	os_free(drv);
 }
 
-
 /**
  * wpa_driver_wext_scan_timeout - Scan timeout to report scan completion
  * @eloop_ctx: Unused
@@ -1091,6 +1090,34 @@ void wpa_driver_wext_scan_timeout(void *eloop_ctx, void *timeout_ctx)
 	wpa_supplicant_event(timeout_ctx, EVENT_SCAN_RESULTS, NULL);
 }
 
+/**
+ * wpa_driver_wext_set_scan_timeout - Set scan timeout to report scan completion
+ * @priv:  Pointer to private wext data from wpa_driver_wext_init()
+ *
+ * This function can be used to set registered timeout when starting a scan to
+ * generate a scan completed event if the driver does not report this.
+ */
+static void wpa_driver_wext_set_scan_timeout(void *priv)
+{
+	struct wpa_driver_wext_data *drv = priv;
+	int timeout = 10; /* In case scan A and B bands it can be long */
+
+	/* Not all drivers generate "scan completed" wireless event, so try to
+	 * read results after a timeout. */
+	if (drv->scan_complete_events) {
+		/*
+		 * The driver seems to deliver SIOCGIWSCAN events to notify
+		 * when scan is complete, so use longer timeout to avoid race
+		 * conditions with scanning and following association request.
+		 */
+		timeout = 30;
+	}
+	wpa_printf(MSG_DEBUG, "Scan requested - scan timeout %d seconds",
+		   timeout);
+	eloop_cancel_timeout(wpa_driver_wext_scan_timeout, drv, drv->ctx);
+	eloop_register_timeout(timeout, 0, wpa_driver_wext_scan_timeout, drv,
+			       drv->ctx);
+}
 
 /**
  * wpa_driver_wext_scan - Request the driver to initiate scan
@@ -1105,7 +1132,7 @@ int wpa_driver_wext_scan(void *priv, const u8 *ssid, size_t ssid_len)
 {
 	struct wpa_driver_wext_data *drv = priv;
 	struct iwreq iwr;
-	int ret = 0, timeout;
+	int ret = 0;
 	struct iw_scan_req req;
 #ifdef ANDROID
 	struct wpa_supplicant *wpa_s = (struct wpa_supplicant *)(drv->ctx);
@@ -1146,22 +1173,7 @@ int wpa_driver_wext_scan(void *priv, const u8 *ssid, size_t ssid_len)
 		ret = -1;
 	}
 
-	/* Not all drivers generate "scan completed" wireless event, so try to
-	 * read results after a timeout. */
-	timeout = 10; /* In case scan A and B bands it can be long */
-	if (drv->scan_complete_events) {
-		/*
-		 * The driver seems to deliver SIOCGIWSCAN events to notify
-		 * when scan is complete, so use longer timeout to avoid race
-		 * conditions with scanning and following association request.
-		 */
-		timeout = 30;
-	}
-	wpa_printf(MSG_DEBUG, "Scan requested (ret=%d) - scan timeout %d "
-		   "seconds", ret, timeout);
-	eloop_cancel_timeout(wpa_driver_wext_scan_timeout, drv, drv->ctx);
-	eloop_register_timeout(timeout, 0, wpa_driver_wext_scan_timeout, drv,
-			       drv->ctx);
+	wpa_driver_wext_set_scan_timeout(priv);
 
 	return ret;
 }
@@ -1190,7 +1202,7 @@ int wpa_driver_wext_combo_scan(void *priv, struct wpa_ssid **ssid_ptr,
 	struct wpa_supplicant *wpa_s = (struct wpa_supplicant *)(drv->ctx);
 	int scan_probe_flag = 0;
 
-	if (!drv->driver_is_loaded) {
+	if (!drv->driver_is_started) {
 		wpa_printf(MSG_DEBUG, "%s: Driver stopped", __func__);
 		return -1;
 	}
@@ -1244,22 +1256,7 @@ int wpa_driver_wext_combo_scan(void *priv, struct wpa_ssid **ssid_ptr,
 		goto old_scan;
 	}
 
-	/* Not all drivers generate "scan completed" wireless event, so try to
-	 * read results after a timeout. */
-	timeout = 10; /* In case scan A and B bands it can be long */
-	if (drv->scan_complete_events) {
-		/*
-		 * The driver seems to deliver SIOCGIWSCAN events to notify
-		 * when scan is complete, so use longer timeout to avoid race
-		 * conditions with scanning and following association request.
-		 */
-		timeout = 30;
-	}
-	wpa_printf(MSG_DEBUG, "Scan requested (ret=%d) - scan timeout %d "
-		   "seconds", ret, timeout);
-	eloop_cancel_timeout(wpa_driver_wext_scan_timeout, drv, drv->ctx);
-	eloop_register_timeout(timeout, 0, wpa_driver_wext_scan_timeout, drv,
-			       drv->ctx);
+	wpa_driver_wext_set_scan_timeout(priv);
 
 	return ret;
 
@@ -1303,7 +1300,7 @@ static u8 * wpa_driver_wext_giwscan(struct wpa_driver_wext_data *drv,
 				   "trying larger buffer (%lu bytes)",
 				   (unsigned long) res_buf_len);
 		} else {
-			wpa_printf(MSG_ERROR, "ioctl[SIOCGIWSCAN]");
+			wpa_printf(MSG_ERROR, "ioctl[SIOCGIWSCAN]: %d", errno);
 			os_free(res_buf);
 			return NULL;
 		}
@@ -2516,6 +2513,47 @@ int wpa_driver_wext_get_version(struct wpa_driver_wext_data *drv)
 
 
 #ifdef ANDROID
+static int wpa_driver_wext_set_cscan_params(char *buf, size_t buf_len, char *cmd)
+{
+	char *pasv_ptr;
+	int bp;
+	u16 pasv_dwell = WEXT_CSCAN_PASV_DWELL_TIME_DEF;
+	u8 channel;
+
+	wpa_printf(MSG_DEBUG, "%s: %s", __func__, cmd);
+
+	/* Get command parameters */
+	pasv_ptr = os_strstr(cmd, ",TIME=");
+	if (pasv_ptr) {
+		*pasv_ptr = '\0';
+		pasv_ptr += 6;
+		pasv_dwell = (u16)atoi(pasv_ptr);
+	}
+	channel = (u8)atoi(cmd + 5);
+
+	bp = WEXT_CSCAN_HEADER_SIZE;
+	os_memcpy(buf, WEXT_CSCAN_HEADER, bp);
+
+	/* Set list of channels */
+	buf[bp++] = WEXT_CSCAN_CHANNEL_SECTION;
+	buf[bp++] = channel;
+
+	/* Set passive dwell time (default is 250) */
+	buf[bp++] = WEXT_CSCAN_PASV_DWELL_SECTION;
+	buf[bp++] = (u8)pasv_dwell;
+	buf[bp++] = (u8)(pasv_dwell >> 8);
+
+	/* Set home dwell time (default is 40) */
+	buf[bp++] = WEXT_CSCAN_HOME_DWELL_SECTION;
+	buf[bp++] = (u8)WEXT_CSCAN_HOME_DWELL_TIME;
+	buf[bp++] = (u8)(WEXT_CSCAN_HOME_DWELL_TIME >> 8);
+
+	/* Set cscan type */
+	buf[bp++] = WEXT_CSCAN_TYPE_SECTION;
+	buf[bp++] = WEXT_CSCAN_TYPE_PASSIVE;
+	return bp;
+}
+
 static char *wpa_driver_get_country_code(int channels)
 {
 	char *country = "US"; /* WEXT_NUMBER_SCAN_CHANNELS_FCC */
@@ -2536,7 +2574,7 @@ static int wpa_driver_priv_driver_cmd( void *priv, char *cmd, char *buf, size_t 
 
 	wpa_printf(MSG_DEBUG, "%s %s len = %d", __func__, cmd, buf_len);
 
-	if (!drv->driver_is_loaded && (os_strcasecmp(cmd, "START") != 0)) {
+	if (!drv->driver_is_started && (os_strcasecmp(cmd, "START") != 0)) {
 		wpa_printf(MSG_ERROR,"WEXT: Driver not initialized yet");
 		return -1;
 	}
@@ -2567,6 +2605,16 @@ static int wpa_driver_priv_driver_cmd( void *priv, char *cmd, char *buf, size_t 
 	iwr.u.data.pointer = buf;
 	iwr.u.data.length = buf_len;
 
+	if( os_strncasecmp(cmd, "CSCAN", 5) == 0 ) {
+		if (!wpa_s->scanning && ((wpa_s->wpa_state <= WPA_SCANNING) ||
+					(wpa_s->wpa_state >= WPA_COMPLETED))) {
+			iwr.u.data.length = wpa_driver_wext_set_cscan_params(buf, buf_len, cmd);
+		} else {
+			wpa_printf(MSG_ERROR, "Ongoing Scan action...");
+			return ret;
+		}
+	}
+
 	ret = ioctl(drv->ioctl_sock, SIOCSIWPRIV, &iwr);
 
 	if (ret < 0) {
@@ -2585,15 +2633,16 @@ static int wpa_driver_priv_driver_cmd( void *priv, char *cmd, char *buf, size_t 
 		    (os_strcasecmp(cmd, "GETPOWER") == 0) ||
 		    (os_strcasecmp(cmd, "GETBAND") == 0)) {
 			ret = strlen(buf);
-		}
-		else if (os_strcasecmp(cmd, "START") == 0) {
-			drv->driver_is_loaded = TRUE;
+		} else if (os_strcasecmp(cmd, "START") == 0) {
+			drv->driver_is_started = TRUE;
 			/* os_sleep(0, WPA_DRIVER_WEXT_WAIT_US);
 			wpa_msg(drv->ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "STARTED"); */
-		}
-		else if (os_strcasecmp(cmd, "STOP") == 0) {
-			drv->driver_is_loaded = FALSE;
+		} else if (os_strcasecmp(cmd, "STOP") == 0) {
+			drv->driver_is_started = FALSE;
 			/* wpa_msg(drv->ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "STOPPED"); */
+		} else if (os_strncasecmp(cmd, "CSCAN", 5) == 0) {
+			wpa_driver_wext_set_scan_timeout(priv);
+			wpa_supplicant_notify_scanning(wpa_s, 1);
 		}
 		wpa_printf(MSG_DEBUG, "%s %s len = %d, %d", __func__, buf, ret, strlen(buf));
 	}

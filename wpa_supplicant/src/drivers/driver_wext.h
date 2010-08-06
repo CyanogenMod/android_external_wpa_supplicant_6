@@ -45,7 +45,7 @@ struct wpa_driver_wext_data {
 	int scan_complete_events;
 #ifdef ANDROID
 	int errors;
-	int driver_is_loaded;
+	int driver_is_started;
 	int skip_disconnect;
 #endif
 };
@@ -105,7 +105,10 @@ int wpa_driver_wext_keymgmt2wext(int keymgmt);
 #define WEXT_CSCAN_PASV_DWELL_SECTION	'P'
 #define WEXT_CSCAN_HOME_DWELL_SECTION	'H'
 #define WEXT_CSCAN_TYPE_SECTION		'T'
+#define WEXT_CSCAN_TYPE_DEFAULT		0
+#define WEXT_CSCAN_TYPE_PASSIVE		1
 #define WEXT_CSCAN_PASV_DWELL_TIME	130
+#define WEXT_CSCAN_PASV_DWELL_TIME_DEF	250
 #define WEXT_CSCAN_HOME_DWELL_TIME	130
 #endif
 
