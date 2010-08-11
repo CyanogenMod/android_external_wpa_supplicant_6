@@ -2516,7 +2516,7 @@ int wpa_driver_wext_get_version(struct wpa_driver_wext_data *drv)
 static int wpa_driver_wext_set_cscan_params(char *buf, size_t buf_len, char *cmd)
 {
 	char *pasv_ptr;
-	int bp;
+	int bp, i;
 	u16 pasv_dwell = WEXT_CSCAN_PASV_DWELL_TIME_DEF;
 	u8 channel;
 
@@ -2528,6 +2528,8 @@ static int wpa_driver_wext_set_cscan_params(char *buf, size_t buf_len, char *cmd
 		*pasv_ptr = '\0';
 		pasv_ptr += 6;
 		pasv_dwell = (u16)atoi(pasv_ptr);
+		if (pasv_dwell == 0)
+			pasv_dwell = WEXT_CSCAN_PASV_DWELL_TIME_DEF;
 	}
 	channel = (u8)atoi(cmd + 5);
 
@@ -2537,11 +2539,28 @@ static int wpa_driver_wext_set_cscan_params(char *buf, size_t buf_len, char *cmd
 	/* Set list of channels */
 	buf[bp++] = WEXT_CSCAN_CHANNEL_SECTION;
 	buf[bp++] = channel;
+	if (channel != 0) {
+		i = (pasv_dwell - 1) / WEXT_CSCAN_PASV_DWELL_TIME_DEF;
+		for (; i > 0; i--) {
+			if ((size_t)(bp + 12) >= buf_len)
+				break;
+			buf[bp++] = WEXT_CSCAN_CHANNEL_SECTION;
+			buf[bp++] = channel;
+		}
+	} else {
+		if (pasv_dwell > WEXT_CSCAN_PASV_DWELL_TIME_MAX)
+			pasv_dwell = WEXT_CSCAN_PASV_DWELL_TIME_MAX;
+	}
 
 	/* Set passive dwell time (default is 250) */
 	buf[bp++] = WEXT_CSCAN_PASV_DWELL_SECTION;
-	buf[bp++] = (u8)pasv_dwell;
-	buf[bp++] = (u8)(pasv_dwell >> 8);
+	if (channel != 0) {
+		buf[bp++] = (u8)WEXT_CSCAN_PASV_DWELL_TIME_DEF;
+		buf[bp++] = (u8)(WEXT_CSCAN_PASV_DWELL_TIME_DEF >> 8);
+	} else {
+		buf[bp++] = (u8)pasv_dwell;
+		buf[bp++] = (u8)(pasv_dwell >> 8);
+	}
 
 	/* Set home dwell time (default is 40) */
 	buf[bp++] = WEXT_CSCAN_HOME_DWELL_SECTION;

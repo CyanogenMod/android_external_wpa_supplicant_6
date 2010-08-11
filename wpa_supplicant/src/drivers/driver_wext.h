@@ -109,6 +109,7 @@ int wpa_driver_wext_keymgmt2wext(int keymgmt);
 #define WEXT_CSCAN_TYPE_PASSIVE		1
 #define WEXT_CSCAN_PASV_DWELL_TIME	130
 #define WEXT_CSCAN_PASV_DWELL_TIME_DEF	250
+#define WEXT_CSCAN_PASV_DWELL_TIME_MAX	3000
 #define WEXT_CSCAN_HOME_DWELL_TIME	130
 #endif
 
