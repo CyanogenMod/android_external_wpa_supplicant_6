@@ -92,6 +92,9 @@ static void wpa_supplicant_scan(void *eloop_ctx, void *timeout_ctx)
 	enum wps_request_type req_type = WPS_REQ_ENROLLEE_INFO;
 #endif /* CONFIG_WPS */
 
+	wpa_printf(MSG_ERROR, "%s: scan_req = %d, ap_scan = %d", __func__,
+		wpa_s->scan_req, wpa_s->conf->ap_scan);
+
 	if (wpa_s->disconnected && !wpa_s->scan_req) {
 		wpa_supplicant_set_state(wpa_s, WPA_DISCONNECTED);
 		return;
@@ -162,15 +165,6 @@ static void wpa_supplicant_scan(void *eloop_ctx, void *timeout_ctx)
 		return;
 	}
 
-	wpa_printf(MSG_DEBUG, "Starting AP scan (%s SSID)",
-		   ssid ? "specific": "broadcast");
-	if (ssid) {
-		wpa_hexdump_ascii(MSG_DEBUG, "Scan SSID",
-				  ssid->ssid, ssid->ssid_len);
-		wpa_s->prev_scan_ssid = ssid;
-	} else
-		wpa_s->prev_scan_ssid = BROADCAST_SSID_SCAN;
-
 #ifdef CONFIG_WPS
 	wps = wpas_wps_in_use(wpa_s->conf, &req_type);
 #endif /* CONFIG_WPS */
@@ -199,14 +193,22 @@ static void wpa_supplicant_scan(void *eloop_ctx, void *timeout_ctx)
 
 	wpa_supplicant_notify_scanning(wpa_s, 1);
 
+	wpa_printf(MSG_DEBUG, "Starting AP scan (%s SSID)",
+		   ssid ? "specific": "broadcast");
+	if (ssid) {
+		wpa_hexdump_ascii(MSG_DEBUG, "Scan SSID",
+				  ssid->ssid, ssid->ssid_len);
+		wpa_s->prev_scan_ssid = ssid;
+	} else
+		wpa_s->prev_scan_ssid = BROADCAST_SSID_SCAN;
+
 	if (wpa_s->use_client_mlme) {
 		ieee80211_sta_set_probe_req_ie(wpa_s, extra_ie, extra_ie_len);
 		ret = ieee80211_sta_req_scan(wpa_s, ssid ? ssid->ssid : NULL,
 					     ssid ? ssid->ssid_len : 0);
 	} else {
 		wpa_drv_set_probe_req_ie(wpa_s, extra_ie, extra_ie_len);
-		ret = wpa_drv_scan(wpa_s, ssid ? ssid->ssid : NULL,
-				   ssid ? ssid->ssid_len : 0);
+		ret = wpa_drv_scan(wpa_s, &ssid);
 	}
 
 	wpabuf_free(wps_ie);

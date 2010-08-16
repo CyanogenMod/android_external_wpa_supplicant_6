@@ -369,6 +369,7 @@ struct ieee80211_rx_status {
         int ssi;
 };
 
+struct wpa_ssid;
 
 /**
  * struct wpa_driver_ops - Driver interface API definition
@@ -570,6 +571,23 @@ struct wpa_driver_ops {
 	 * results with wpa_driver_get_scan_results().
 	 */
 	int (*scan)(void *priv, const u8 *ssid, size_t ssid_len);
+
+	/**
+	 * combo_scan - Request the driver to initiate combo scan
+	 * @priv: private driver interface data
+	 * @ssid_ptr: specific SSID to scan for (ProbeReq) or %NULL to scan for
+	 *	all SSIDs (either active scan with broadcast SSID or passive
+	 *	scan
+	 * @ssid_conf: SSID list from configuration
+	 *
+	 * Returns: 0 on success, -1 on failure
+	 *
+	 * Once the scan results are ready, the driver should report scan
+	 * results event for wpa_supplicant which will eventually request the
+	 * results with wpa_driver_get_scan_results().
+	 */
+	int (*combo_scan)(void *priv, struct wpa_ssid **ssid_prt,
+			   struct wpa_ssid *ssid_conf);
 
 	/**
 	 * get_scan_results - Fetch the latest scan results (old version)
