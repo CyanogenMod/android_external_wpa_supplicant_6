@@ -1139,6 +1139,8 @@ int wpa_driver_wext_scan(void *priv, const u8 *ssid, size_t ssid_len)
 	int scan_probe_flag = 0;
 #endif
 
+	wpa_printf(MSG_ERROR, "%s: Start", __func__);
+
 	if (ssid_len > IW_ESSID_MAX_SIZE) {
 		wpa_printf(MSG_DEBUG, "%s: too long SSID (%lu)",
 			   __FUNCTION__, (unsigned long) ssid_len);
@@ -1203,11 +1205,11 @@ int wpa_driver_wext_combo_scan(void *priv, struct wpa_ssid **ssid_ptr,
 	int scan_probe_flag = 0;
 
 	if (!drv->driver_is_started) {
-		wpa_printf(MSG_DEBUG, "%s: Driver stopped", __func__);
+		wpa_printf(MSG_ERROR, "%s: Driver stopped", __func__);
 		return -1;
 	}
 
-	wpa_printf(MSG_DEBUG, "%s: Start", __func__);
+	wpa_printf(MSG_ERROR, "%s: Start", __func__);
 
 	/* Set list of SSIDs */
 	ssid_orig = (*ssid_ptr);
@@ -1253,7 +1255,7 @@ int wpa_driver_wext_combo_scan(void *priv, struct wpa_ssid **ssid_ptr,
 	if ((ret = ioctl(drv->ioctl_sock, SIOCSIWPRIV, &iwr)) < 0) {
 		wpa_printf(MSG_ERROR, "ioctl[SIOCSIWPRIV] (cscan): %d", ret);
 		*ssid_ptr = ssid_orig;
-		goto old_scan;
+		/* goto old_scan; */
 	}
 
 	wpa_driver_wext_set_scan_timeout(priv);
