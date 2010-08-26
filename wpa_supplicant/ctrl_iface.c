@@ -1633,6 +1633,8 @@ char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
 	int ctrl_rsp = 0;
 	int reply_len;
 
+	wpa_printf(MSG_DEBUG, "CMD = %s", buf);
+
 	if (os_strncmp(buf, WPA_CTRL_RSP, os_strlen(WPA_CTRL_RSP)) == 0 ||
 	    os_strncmp(buf, "SET_NETWORK ", 12) == 0) {
 		wpa_hexdump_ascii_key(MSG_DEBUG, "RX ctrl_iface",
@@ -1759,6 +1761,7 @@ char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
 		wpa_s->disconnected = 1;
 		wpa_supplicant_disassociate(wpa_s, WLAN_REASON_DEAUTH_LEAVING);
 	} else if (os_strcmp(buf, "SCAN") == 0) {
+		wpa_printf(MSG_ERROR, "Framework Scan request");
 #ifdef ANDROID
 		if (!wpa_s->scanning && ((wpa_s->wpa_state <= WPA_SCANNING) ||
 			(wpa_s->wpa_state >= WPA_COMPLETED))) {

@@ -92,7 +92,7 @@ static void wpa_supplicant_scan(void *eloop_ctx, void *timeout_ctx)
 	enum wps_request_type req_type = WPS_REQ_ENROLLEE_INFO;
 #endif /* CONFIG_WPS */
 
-	wpa_printf(MSG_DEBUG, "%s: scan_req = %d, ap_scan = %d", __func__,
+	wpa_printf(MSG_ERROR, "%s: scan_req = %d, ap_scan = %d", __func__,
 		wpa_s->scan_req, wpa_s->conf->ap_scan);
 
 	if (wpa_s->disconnected && !wpa_s->scan_req) {
