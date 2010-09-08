@@ -1253,20 +1253,11 @@ int wpa_driver_wext_combo_scan(void *priv, struct wpa_ssid **ssid_ptr,
 	if ((ret = ioctl(drv->ioctl_sock, SIOCSIWPRIV, &iwr)) < 0) {
 		wpa_printf(MSG_ERROR, "ioctl[SIOCSIWPRIV] (cscan): %d", ret);
 		*ssid_ptr = ssid_orig;
-		goto old_scan;
 	}
 
 	wpa_driver_wext_set_scan_timeout(priv);
 
 	return ret;
-
-old_scan:
-	if (*ssid_ptr) {
-		ssid_nm = (*ssid_ptr)->ssid;
-		ssid_len = (*ssid_ptr)->ssid_len;
-	}
-
-	return wpa_driver_wext_scan(priv, ssid_nm, ssid_len);
 }
 
 
