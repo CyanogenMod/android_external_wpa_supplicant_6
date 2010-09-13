@@ -1204,7 +1204,7 @@ int wpa_driver_wext_combo_scan(void *priv, struct wpa_ssid **ssid_ptr,
 
 	if (!drv->driver_is_started) {
 		wpa_printf(MSG_DEBUG, "%s: Driver stopped", __func__);
-		return -1;
+		return 0;
 	}
 
 	wpa_printf(MSG_DEBUG, "%s: Start", __func__);
