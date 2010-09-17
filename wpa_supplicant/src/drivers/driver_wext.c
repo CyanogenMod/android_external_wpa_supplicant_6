@@ -544,6 +544,7 @@ static void wpa_driver_wext_event_wireless(struct wpa_driver_wext_data *drv,
 					wpa_supplicant_event(ctx, EVENT_DISASSOC,
 						     NULL);
 #ifdef ANDROID
+					wpa_driver_wext_disconnect(drv);
 				}
 #endif
 			
