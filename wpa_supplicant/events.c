@@ -645,7 +645,10 @@ static void wpa_supplicant_event_scan_results(struct wpa_supplicant *wpa_s)
 		wpa_printf(MSG_DEBUG, "New scan results available");
 		wpa_msg_ctrl(wpa_s, MSG_INFO, WPA_EVENT_SCAN_RESULTS);
 		wpa_supplicant_dbus_notify_scan_results(wpa_s);
+/* WPS availability is fetched from scan results. Reduce logging. */
+#ifndef ANDROID
 		wpas_wps_notify_scan_results(wpa_s);
+#endif
 	}
 
 	if ((wpa_s->conf->ap_scan == 2 && !wpas_wps_searching(wpa_s)))
