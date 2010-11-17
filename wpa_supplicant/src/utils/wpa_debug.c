@@ -20,7 +20,11 @@
 #ifdef CONFIG_DEBUG_FILE
 static FILE *out_file = NULL;
 #endif /* CONFIG_DEBUG_FILE */
+#ifdef CONFIG_ANDROID_LOG
+int wpa_debug_level = MSG_WARNING;
+#else
 int wpa_debug_level = MSG_INFO;
+#endif
 int wpa_debug_show_keys = 0;
 int wpa_debug_timestamp = 0;
 
