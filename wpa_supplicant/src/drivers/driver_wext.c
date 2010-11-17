@@ -1210,7 +1210,7 @@ int wpa_driver_wext_combo_scan(void *priv, struct wpa_ssid **ssid_ptr,
 		return 0;
 	}
 
-	wpa_printf(MSG_ERROR, "%s: Start", __func__);
+	wpa_printf(MSG_DEBUG, "%s: Start", __func__);
 
 	/* Set list of SSIDs */
 	ssid_orig = (*ssid_ptr);

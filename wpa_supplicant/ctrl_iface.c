@@ -1761,7 +1761,6 @@ char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
 		wpa_s->disconnected = 1;
 		wpa_supplicant_disassociate(wpa_s, WLAN_REASON_DEAUTH_LEAVING);
 	} else if (os_strcmp(buf, "SCAN") == 0) {
-		wpa_printf(MSG_ERROR, "Framework Scan request");
 #ifdef ANDROID
 		if (!wpa_s->scanning && ((wpa_s->wpa_state <= WPA_SCANNING) ||
 			(wpa_s->wpa_state >= WPA_COMPLETED))) {
