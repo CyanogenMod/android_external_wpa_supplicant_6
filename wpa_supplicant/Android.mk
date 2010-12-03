@@ -1171,3 +1171,7 @@ LOCAL_SHARED_LIBRARIES := libcutils
 LOCAL_COPY_HEADERS_TO := libwpa_client
 LOCAL_COPY_HEADERS := src/common/wpa_ctrl.h
 include $(BUILD_SHARED_LIBRARY)
+
+ifdef TARGET_IS_GALAXYS
+  LOCAL_CFLAGS += -DTARGET_IS_GALAXYS
+endif
