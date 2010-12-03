@@ -97,11 +97,17 @@ static int wpa_cli_quit = 0;
 static int wpa_cli_attached = 0;
 static int wpa_cli_connected = 0;
 static int wpa_cli_last_id = 0;
+
 #ifdef ANDROID
-static const char *ctrl_iface_dir = "/data/misc/wifi/wpa_supplicant";
+    #ifdef TARGET_IS_GALAXYS
+    static const char *ctrl_iface_dir = "/data/misc/wifi/sockets";
+    #else
+    static const char *ctrl_iface_dir = "/data/misc/wifi/wpa_supplicant";
+    #endif
 #else
 static const char *ctrl_iface_dir = "/var/run/wpa_supplicant";
 #endif
+
 static char *ctrl_ifname = NULL;
 static const char *pid_file = NULL;
 static const char *action_file = NULL;
