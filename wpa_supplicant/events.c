@@ -552,6 +552,11 @@ wpa_supplicant_select_bss_non_wpa(struct wpa_supplicant *wpa_s,
 				continue;
 			}
 
+			/* Fix 5.1.7 WPS test case */
+			if (wpas_wps_ssid_bss_match(wpa_s, ssid, bss) == 0) {
+				continue;
+			}
+
 			if (!(ssid->key_mgmt & WPA_KEY_MGMT_NONE) &&
 			    !(ssid->key_mgmt & WPA_KEY_MGMT_WPS) &&
 			    !(ssid->key_mgmt & WPA_KEY_MGMT_IEEE8021X_NO_WPA))
