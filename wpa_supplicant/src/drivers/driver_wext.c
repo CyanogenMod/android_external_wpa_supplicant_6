@@ -969,6 +969,7 @@ void * wpa_driver_wext_init(void *ctx, const char *ifname)
 	drv->errors = 0;
 	drv->driver_is_started = TRUE;
 	drv->skip_disconnect = 0;
+	drv->bgscan_enabled = 0;
 #endif
 	wpa_driver_wext_finish_drv_init(drv);
 
@@ -1254,7 +1255,10 @@ int wpa_driver_wext_combo_scan(void *priv, struct wpa_ssid **ssid_ptr,
 	iwr.u.data.length = bp;
 
 	if ((ret = ioctl(drv->ioctl_sock, SIOCSIWPRIV, &iwr)) < 0) {
-		wpa_printf(MSG_ERROR, "ioctl[SIOCSIWPRIV] (cscan): %d", ret);
+		if (!drv->bgscan_enabled)
+			wpa_printf(MSG_ERROR, "ioctl[SIOCSIWPRIV] (cscan): %d", ret);
+		else
+			ret = 0;	/* Hide error in case of bg scan */
 		*ssid_ptr = ssid_orig;
 		/* goto old_scan; */
 	}
@@ -2704,8 +2708,10 @@ static int wpa_driver_priv_driver_cmd( void *priv, char *cmd, char *buf, size_t 
 			return ret;
 		}
 		os_strncpy(cmd, "PNOFORCE 1", MAX_DRV_CMD_SIZE);
+		drv->bgscan_enabled = 1;
 	} else if( os_strcasecmp(cmd, "BGSCAN-STOP") == 0 ) {
 		os_strncpy(cmd, "PNOFORCE 0", MAX_DRV_CMD_SIZE);
+		drv->bgscan_enabled = 0;
 	}
 
 	os_memset(&iwr, 0, sizeof(iwr));

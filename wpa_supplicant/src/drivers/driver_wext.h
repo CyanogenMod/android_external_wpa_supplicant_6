@@ -47,6 +47,7 @@ struct wpa_driver_wext_data {
 	int errors;
 	int driver_is_started;
 	int skip_disconnect;
+	int bgscan_enabled;
 #endif
 };
 
