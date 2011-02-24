@@ -31,6 +31,8 @@
 #include "wpa_ctrl.h"
 #include "common.h"
 
+#include "cutils/properties.h"
+static const char SUPP_PROP_NAME[]      = "init.svc.wpa_supplicant";
 
 #if defined(CONFIG_CTRL_IFACE_UNIX) || defined(CONFIG_CTRL_IFACE_UDP)
 #define CTRL_IFACE_SOCKET
@@ -295,6 +297,17 @@ int wpa_ctrl_request(struct wpa_ctrl *ctrl, const char *cmd, size_t cmd_len,
 	const char *_cmd;
 	char *cmd_buf = NULL;
 	size_t _cmd_len;
+
+        char supp_status[PROPERTY_VALUE_MAX] = {'\0'};
+	/*
+	 * Blocking Commands from GUI incase supplicant
+	 * is not running.
+	 */
+	if (property_get(SUPP_PROP_NAME, supp_status, NULL)) {
+		if((strcmp(supp_status, "stopped") == 0) ) {
+			return -2;
+		}
+	}
 
 #ifdef CONFIG_CTRL_IFACE_UDP
 	if (ctrl->cookie) {
