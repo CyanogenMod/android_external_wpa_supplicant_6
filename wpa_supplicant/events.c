@@ -97,6 +97,7 @@ static void wpa_supplicant_stop_countermeasures(void *eloop_ctx,
 void wpa_supplicant_mark_disassoc(struct wpa_supplicant *wpa_s)
 {
 	wpa_supplicant_set_state(wpa_s, WPA_DISCONNECTED);
+	wpa_s->conf->ap_scan = DEFAULT_AP_SCAN;
 	os_memset(wpa_s->bssid, 0, ETH_ALEN);
 	os_memset(wpa_s->pending_bssid, 0, ETH_ALEN);
 	eapol_sm_notify_portEnabled(wpa_s->eapol, FALSE);
@@ -951,7 +952,7 @@ static void wpa_supplicant_event_disassoc(struct wpa_supplicant *wpa_s)
 			"pre-shared key may be incorrect");
 	}
 	if (wpa_s->wpa_state >= WPA_ASSOCIATED)
-		wpa_supplicant_req_scan(wpa_s, 0, 100000);
+		wpa_supplicant_req_scan(wpa_s, 0, 500000);
 	bssid = wpa_s->bssid;
 	if (is_zero_ether_addr(bssid))
 		bssid = wpa_s->pending_bssid;
