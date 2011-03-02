@@ -483,13 +483,9 @@ void wpa_supplicant_set_state(struct wpa_supplicant *wpa_s, wpa_states state)
 {
 #ifdef ANDROID
 	int network_id = -1;
-	if (wpa_s && wpa_s->current_ssid) {
+
+	if (wpa_s && wpa_s->current_ssid)
 		network_id = wpa_s->current_ssid->id;
-	}
-	wpa_states reported_state = state;
-	if (state == WPA_DISCONNECTED && wpa_s->disconnected) {
-		reported_state = WPA_IDLE;
-	}
 #endif
 	wpa_printf(MSG_DEBUG, "State: %s -> %s",
 		   wpa_supplicant_state_txt(wpa_s->wpa_state),
@@ -502,7 +498,7 @@ void wpa_supplicant_set_state(struct wpa_supplicant *wpa_s, wpa_states state)
 						wpa_s->wpa_state);
 #ifdef ANDROID
 	wpa_msg(wpa_s, MSG_INFO, WPA_EVENT_STATE_CHANGE "id=%d state=%d BSSID=" MACSTR,
-		network_id, reported_state, MAC2STR(wpa_s->pending_bssid));
+		network_id, state, MAC2STR(wpa_s->pending_bssid));
 #endif
 
 	if (state == WPA_COMPLETED && wpa_s->new_connection) {
