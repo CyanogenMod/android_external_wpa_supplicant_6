@@ -39,9 +39,6 @@
 #include "blacklist.h"
 #include "wpas_glue.h"
 #include "wps_supplicant.h"
-#ifdef ANDROID
-#include <cutils/properties.h>
-#endif
 
 const char *wpa_supplicant_version =
 "wpa_supplicant v" VERSION_STR "\n"
@@ -1733,7 +1730,9 @@ static struct wpa_supplicant * wpa_supplicant_alloc(void)
 	if (wpa_s == NULL)
 		return NULL;
 	wpa_s->scan_req = 1;
-
+#ifdef ANDROID
+	wpa_s->scan_interval = 5;
+#endif
 	return wpa_s;
 }
 
@@ -2005,16 +2004,6 @@ struct wpa_supplicant * wpa_supplicant_add_iface(struct wpa_global *global,
 		return NULL;
 	}
 
-#ifdef ANDROID
-    char scan_prop[PROPERTY_VALUE_MAX];
-    char *endp;
-    if (property_get("wifi.supplicant_scan_interval", scan_prop, "6") != 0) {
-        wpa_s->scan_interval = (int)strtol(scan_prop, &endp, 0);
-        if (endp == scan_prop) {
-            wpa_s->scan_interval = 6;
-        }
-    }
-#endif
 	wpa_s->next = global->ifaces;
 	global->ifaces = wpa_s;
 
