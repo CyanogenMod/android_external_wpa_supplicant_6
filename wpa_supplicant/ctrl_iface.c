@@ -1740,15 +1740,6 @@ char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
 	} else if (os_strncmp(buf, "BLACKLIST", 9) == 0) {
 		reply_len = wpa_supplicant_ctrl_iface_blacklist(
 				wpa_s, buf + 9, reply, reply_size);
-		if (os_strlen(buf) > 10 && reply_len == 0) {
-			struct wpa_blacklist *bl = wpa_s->blacklist;
-			if (os_strncmp(buf+10, "clear", 5) == 0 ||
-			    (bl != NULL && os_memcmp(bl->bssid, wpa_s->bssid, ETH_ALEN) == 0)) {
-				wpa_s->disconnected = 0;
-				wpa_s->reassociate = 1;
-				wpa_supplicant_req_scan(wpa_s, 0, 0);
-			}
-		}
 	} else if (os_strncmp(buf, "LOG_LEVEL", 9) == 0) {
 		reply_len = wpa_supplicant_ctrl_iface_log_level(
 				wpa_s, buf + 9, reply, reply_size);
