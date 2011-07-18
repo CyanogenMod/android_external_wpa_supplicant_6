@@ -622,9 +622,6 @@ static int wpas_wps_new_psk_cb(void *ctx, const u8 *mac_addr, const u8 *psk,
 	wpa_printf(MSG_DEBUG, "WPS: Received new WPA/WPA2-PSK from WPS for "
 		   "STA " MACSTR, MAC2STR(mac_addr));
 	wpa_hexdump_key(MSG_DEBUG, "Per-device PSK", psk, psk_len);
-
-	/* TODO */
-
 	return 0;
 }
 
