@@ -2014,7 +2014,8 @@ struct wpa_supplicant * wpa_supplicant_add_iface(struct wpa_global *global,
 #ifdef ANDROID
     char scan_prop[PROPERTY_VALUE_MAX];
     char *endp;
-    if (property_get("wifi.supplicant_scan_interval", scan_prop, "6") != 0) {
+    if ((property_get("persist.wifi_scan_interval", scan_prop, "5") != 0 ||
+        property_get("wifi.supplicant_scan_interval", scan_prop, "5") != 0) {
         wpa_s->scan_interval = (int)strtol(scan_prop, &endp, 0);
         if (endp == scan_prop) {
             wpa_s->scan_interval = 6;
