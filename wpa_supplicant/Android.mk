@@ -30,6 +30,10 @@ ifeq ($(TARGET_ARCH),arm)
 L_CFLAGS += -mabi=aapcs-linux
 endif
 
+ifeq ($(BOARD_WEXT_NO_COMBO_SCAN),true)
+L_CFLAGS += -DWEXT_NO_COMBO_SCAN
+endif
+
 # To ignore possible wrong network configurations
 L_CFLAGS += -DWPA_IGNORE_CONFIG_ERRORS
 
