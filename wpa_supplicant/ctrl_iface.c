@@ -1769,9 +1769,9 @@ char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
 			wpa_supplicant_req_scan(wpa_s, 0, 0);
 #ifdef ANDROID
 		} else {
-			wpa_printf(MSG_ERROR, "Ongoing Scan action...");
-#endif
+			wpa_printf(MSG_WARNING, "Ignoring scan action, already scanning.");
 		}
+#endif
 	} else if (os_strcmp(buf, "SCAN_RESULTS") == 0) {
 		reply_len = wpa_supplicant_ctrl_iface_scan_results(
 			wpa_s, reply, reply_size);
