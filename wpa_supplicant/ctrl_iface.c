@@ -1623,6 +1623,7 @@ static int wpa_supplicant_ctrl_iface_ap_scan(
 }
 
 #ifdef ANDROID
+
 static int wpa_supplicant_driver_cmd(struct wpa_supplicant *wpa_s,
                                      char *cmd, char *buf, size_t buflen)
 {
@@ -1634,6 +1635,27 @@ static int wpa_supplicant_driver_cmd(struct wpa_supplicant *wpa_s,
     }
     return( ret );
 }
+
+static int wpa_supplicant_signal_poll(struct wpa_supplicant *wpa_s, char *buf,
+                                      size_t buflen)
+{
+    int ret;
+    int lssize=20;
+    int rssisize=16;
+    char linkspeed[lssize];
+    char rssi[rssisize];
+
+    wpa_supplicant_driver_cmd(wpa_s, "LINKSPEED", linkspeed, lssize);
+    wpa_supplicant_driver_cmd(wpa_s, "RSSI", rssi, rssisize);
+
+    ret = os_snprintf(buf, buflen, "RSSI=%s\nLINKSPEED=%s\n"
+            "NOISE=0\nFREQUENCY=0\n",
+            strcasestr(rssi,"rssi")+5,linkspeed+10);
+    if (ret < 0 || (unsigned int) ret > buflen)
+        return -1;
+    return ret;
+}
+
 #endif
 
 char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
@@ -1822,6 +1844,9 @@ char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
 		reply_len = wpa_supplicant_ctrl_iface_bss(
 			wpa_s, buf + 4, reply, reply_size);
 #ifdef ANDROID
+    } else if (os_strncmp(buf, "SIGNAL_POLL", 11) == 0) {
+                reply_len = wpa_supplicant_signal_poll(wpa_s, reply,
+                                                       reply_size);
     } else if (os_strncmp(buf, "DRIVER ", 7) == 0) {
         reply_len = wpa_supplicant_driver_cmd(wpa_s, buf + 7, reply, reply_size);
 #endif
