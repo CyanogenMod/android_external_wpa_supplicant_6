@@ -111,6 +111,12 @@ typedef enum {
 	WPA_DISCONNECTED,
 
 	/**
+         * FUUUUUU! ICS expects "1" to be "INTERFACE_DISABLED", as per
+         * wpa_supplicant 8. Sending "1" for INACTIVE makes the interface
+         * shutdown as soon as it idles */
+	WPA_INTERFACE_DISABLED,
+
+	/**
 	 * WPA_INACTIVE - Inactive state (wpa_supplicant disabled)
 	 *
 	 * This state is entered if there are no enabled networks in the
@@ -127,6 +133,12 @@ typedef enum {
 	 * network.
 	 */
 	WPA_SCANNING,
+
+	/**
+         * Moar ICS/wpa_supplicant_8 problems... This one caused an authloop
+         */
+	WPA_AUTHENTICATING,
+
 
 	/**
 	 * WPA_ASSOCIATING - Trying to associate with a BSS/SSID
