@@ -2576,11 +2576,11 @@ static int wpa_driver_priv_driver_cmd( void *priv, char *cmd, char *buf, size_t 
 			ret = strlen(buf);
 		} else if (os_strcasecmp(cmd, "START") == 0) {
 			drv->driver_is_started = TRUE;
-			/* os_sleep(0, WPA_DRIVER_WEXT_WAIT_US);
-			wpa_msg(drv->ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "STARTED"); */
+			/* os_sleep(0, WPA_DRIVER_WEXT_WAIT_US); */
+			wpa_msg(drv->ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "STARTED");
 		} else if (os_strcasecmp(cmd, "STOP") == 0) {
 			drv->driver_is_started = FALSE;
-			/* wpa_msg(drv->ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "STOPPED"); */
+			wpa_msg(drv->ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "STOPPED");
 		}
 		wpa_printf(MSG_DEBUG, "%s %s len = %d, %d", __func__, buf, ret, strlen(buf));
 	}
