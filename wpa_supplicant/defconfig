@@ -85,6 +85,9 @@ CONFIG_DRIVER_ATMEL=y
 # Driver interface for generic Linux wireless extensions
 CONFIG_DRIVER_WEXT=y
 
+# Driver interface for Atheros AR6K using WEXT
+CONFIG_DRIVER_AR6000=y
+
 # Driver interface for Linux drivers using the nl80211 kernel interface
 #CONFIG_DRIVER_NL80211=y
 
