@@ -23,7 +23,7 @@ ifneq ($(BOARD_WPA_SUPPLICANT_DRIVER),)
   CONFIG_DRIVER_$(BOARD_WPA_SUPPLICANT_DRIVER) = y
 endif
 
-include $(LOCAL_PATH)/.config
+include $(LOCAL_PATH)/android.config
 
 # To force sizeof(enum) = 4
 ifeq ($(TARGET_ARCH),arm)
