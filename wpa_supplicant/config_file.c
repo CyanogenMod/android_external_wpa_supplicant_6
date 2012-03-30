@@ -844,8 +844,10 @@ static void wpa_config_write_global(FILE *f, struct wpa_config *config)
 #endif /* CONFIG_CTRL_IFACE */
 	if (config->eapol_version != DEFAULT_EAPOL_VERSION)
 		fprintf(f, "eapol_version=%d\n", config->eapol_version);
+#ifndef ANDROID
 	if (config->ap_scan != DEFAULT_AP_SCAN)
 		fprintf(f, "ap_scan=%d\n", config->ap_scan);
+#endif
 	if (config->fast_reauth != DEFAULT_FAST_REAUTH)
 		fprintf(f, "fast_reauth=%d\n", config->fast_reauth);
 #ifdef EAP_TLS_OPENSSL
