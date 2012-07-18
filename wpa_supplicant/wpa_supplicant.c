@@ -1483,13 +1483,16 @@ int wpa_drv_scan(struct wpa_supplicant *wpa_s, struct wpa_ssid **ssid_ptr)
 	size_t ssid_len = 0;
 	int ret = -1;
 
+#ifndef WEXT_NO_COMBO_SCAN
 	if (wpa_s->driver->combo_scan) {
 		ret = wpa_s->driver->combo_scan(wpa_s->drv_priv, ssid_ptr,
 						wpa_s->conf->ssid);
 		wpa_s->prev_scan_ssid = (*ssid_ptr && !ret) ?
 				(*ssid_ptr) : BROADCAST_SSID_SCAN;
 	}
-	else if (wpa_s->driver->scan) {
+       else
+#endif
+       if (wpa_s->driver->scan) {
 		if (*ssid_ptr) {
 			ssid_nm = (*ssid_ptr)->ssid;
 			ssid_len = (*ssid_ptr)->ssid_len;

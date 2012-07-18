@@ -30,6 +30,10 @@ ifeq ($(TARGET_ARCH),arm)
 L_CFLAGS += -mabi=aapcs-linux
 endif
 
+ifeq ($(BOARD_WEXT_NO_COMBO_SCAN),true)
+L_CFLAGS += -DWEXT_NO_COMBO_SCAN
+endif
+
 # To ignore possible wrong network configurations
 L_CFLAGS += -DWPA_IGNORE_CONFIG_ERRORS
 
@@ -144,6 +148,12 @@ endif
 
 ifdef CONFIG_DRIVER_WEXT
 L_CFLAGS += -DCONFIG_DRIVER_WEXT
+CONFIG_WIRELESS_EXTENSION=y
+endif
+
+ifdef CONFIG_DRIVER_AR6000
+L_CFLAGS += -DCONFIG_DRIVER_AR6000
+OBJS_d += src/drivers/driver_ar6000.c
 CONFIG_WIRELESS_EXTENSION=y
 endif
 
