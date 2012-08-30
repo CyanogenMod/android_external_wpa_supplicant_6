@@ -1641,18 +1641,23 @@ static int wpa_supplicant_signal_poll(struct wpa_supplicant *wpa_s, char *buf,
 {
     int ret;
     int lssize=20;
-    int rssisize=16;
+    int rssisize=250;
     char linkspeed[lssize];
     char rssi[rssisize];
 
-    wpa_supplicant_driver_cmd(wpa_s, "LINKSPEED", linkspeed, lssize);
-    wpa_supplicant_driver_cmd(wpa_s, "RSSI", rssi, rssisize);
 
-    ret = os_snprintf(buf, buflen, "RSSI=%s\nLINKSPEED=%s\n"
+    wpa_supplicant_driver_cmd(wpa_s, "LINKSPEED", linkspeed, lssize);
+
+    wpa_supplicant_driver_cmd(wpa_s, "RSSI", rssi, rssisize); // wext+bcm4329 format: SSID rssid val \0   >= 16 (we have to trim the space at end)
+
+    ret = os_snprintf(buf, buflen, "RSSI=%d\nLINKSPEED=%s\n"
             "NOISE=0\nFREQUENCY=0\n",
-            strcasestr(rssi,"rssi")+5,linkspeed+10);
+            atoi( strcasestr(rssi,"rssi")+5 ),linkspeed+10);
+
     if (ret < 0 || (unsigned int) ret > buflen)
         return -1;
+
+
     return ret;
 }
 
