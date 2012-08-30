@@ -28,21 +28,128 @@
 #include "driver.h"
 #include "eloop.h"
 #include "priv_netlink.h"
-#include "driver_wext.h"
+#include "driver_ar6000.h"
 #include "ieee802_11_defs.h"
 #include "wpa_common.h"
 #include "wpa_ctrl.h"
 #include "wpa_supplicant_i.h"
-#include "config.h"
+#include "config_ssid.h"
 
+static int wpa_driver_ar6000_flush_pmkid(void *priv);
+static int wpa_driver_ar6000_get_range(void *priv);
+static void wpa_driver_ar6000_finish_drv_init(struct wpa_driver_ar6000_data *drv);
+static void wpa_driver_ar6000_disconnect(struct wpa_driver_ar6000_data *drv);
+static int wpa_driver_ar6000_disassociate(void *priv, const u8 *addr,
+					int reason_code);
+#ifdef ANDROID
+#include "wpa_ctrl.h"
+typedef enum {
+        POWER_MODE_AUTO,
+        POWER_MODE_ACTIVE
+} POWER_MODE;
+static int wpa_driver_atheros_pwr_mode(struct wpa_driver_ar6000_data *drv, int mode)
+{
+	struct iwreq iwr;
+	os_memset(&iwr, 0, sizeof(iwr));
+	os_strncpy(iwr.ifr_name, drv->ifname, IFNAMSIZ);
+	if (mode == POWER_MODE_AUTO)
+		iwr.u.power.disabled = 0;
+	else if (mode == POWER_MODE_ACTIVE)
+		iwr.u.power.disabled = 1;
+	else
+		return -1;
+	if (ioctl(drv->ioctl_sock, SIOCSIWPOWER, &iwr) < 0) {
+		wpa_printf(MSG_DEBUG, "drv_wext: failed to control power\n");
+	}
+	return 0;
+}
+#define AR6000_IOCTL_WMI_SET_CHANNELPARAMS   (SIOCIWFIRSTPRIV+16)
+#define AR6000_IOCTL_EXTENDED                (SIOCIWFIRSTPRIV+31)
+#define AR6000_XIOCTRL_WMI_SET_WLAN_STATE                       35
+typedef enum {
+    WLAN_DISABLED,
+    WLAN_ENABLED
+} AR6000_WLAN_STATE;
+static int wpa_driver_atheros_wlan_ctrl(struct wpa_driver_ar6000_data *drv, int enable)
+{
+	struct ifreq ifr;
+	char buf[16];
 
-static int wpa_driver_wext_flush_pmkid(void *priv);
-static int wpa_driver_wext_get_range(void *priv);
-static void wpa_driver_wext_finish_drv_init(struct wpa_driver_wext_data *drv);
-static void wpa_driver_wext_disconnect(struct wpa_driver_wext_data *drv);
+	os_memset(&ifr, 0, sizeof(ifr));
+	os_memset(buf, 0, sizeof(buf));
 
+	os_strncpy(ifr.ifr_name, drv->ifname, IFNAMSIZ);
+	((int *)buf)[0] = AR6000_XIOCTRL_WMI_SET_WLAN_STATE;
+	ifr.ifr_data = buf;
 
-static int wpa_driver_wext_send_oper_ifla(struct wpa_driver_wext_data *drv,
+	if (enable)
+		((int *)buf)[1] = WLAN_ENABLED;
+	else
+		((int *)buf)[1] = WLAN_DISABLED;
+
+	if (ioctl(drv->ioctl_sock, AR6000_IOCTL_EXTENDED, &ifr) < 0) {
+		return -1;
+	}
+	return 0;
+}
+
+static uint16_t wmic_ieee2freq(int chan)
+{
+	/* channel 14? */
+	if (chan == 14) {
+		return 2484;
+	}
+    if (chan < 14) {    /* 0-13 */
+        return (2407 + (chan * 5));
+    }
+    return (5000 + (chan*5));
+}
+
+ typedef struct {
+	 uint8_t	reserved1;
+	 uint8_t	scanParam;              /* set if enable scan */
+	 uint8_t	phyMode;                /* see WMI_PHY_MODE */
+	 uint8_t	numChannels;            /* how many channels follow */
+	 uint16_t	channelList[1];         /* channels in Mhz */
+} STRUCT_PACKED WMI_CHANNEL_PARAMS_CMD;
+
+typedef enum {
+    WMI_DEFAULT_MODE = 0x0,
+    WMI_11A_MODE  = 0x1,
+    WMI_11G_MODE  = 0x2,
+    WMI_11AG_MODE = 0x3,
+    WMI_11B_MODE  = 0x4,
+    WMI_11GONLY_MODE = 0x5,
+    WMI_11GHT20_MODE = 0x6,
+} WMI_PHY_MODE;
+
+static int wpa_driver_atheros_cfg_chan(struct wpa_driver_ar6000_data *drv, int num)
+{
+	struct ifreq ifr;
+	char buf[256];
+	WMI_CHANNEL_PARAMS_CMD *chParamCmd = (WMI_CHANNEL_PARAMS_CMD *)buf;
+	int i;
+	uint16_t *clist;
+
+	os_memset(&ifr, 0, sizeof(ifr));
+	os_strncpy(ifr.ifr_name, drv->ifname, IFNAMSIZ);
+	chParamCmd->phyMode = WMI_11G_MODE;
+	clist = chParamCmd->channelList;
+	chParamCmd->numChannels = num;
+	chParamCmd->scanParam = 1;
+
+	for (i = 0; i < num; i++)
+		clist[i] = wmic_ieee2freq(i + 1);
+
+	ifr.ifr_data = (void *)chParamCmd;
+
+	if (ioctl(drv->ioctl_sock, AR6000_IOCTL_WMI_SET_CHANNELPARAMS, &ifr) < 0) {
+		return -1;
+	}
+	return 0;
+}
+#endif // ANDROID
+static int wpa_driver_ar6000_send_oper_ifla(struct wpa_driver_ar6000_data *drv,
 					  int linkmode, int operstate)
 {
 	struct {
@@ -69,9 +176,8 @@ static int wpa_driver_wext_send_oper_ifla(struct wpa_driver_wext_data *drv,
 	req.ifinfo.ifi_change = 0;
 
 	if (linkmode != -1) {
-		rta = aliasing_hide_typecast(
-			((char *) &req + NLMSG_ALIGN(req.hdr.nlmsg_len)),
-			struct rtattr);
+		rta = (struct rtattr *)
+			((char *) &req + NLMSG_ALIGN(req.hdr.nlmsg_len));
 		rta->rta_type = IFLA_LINKMODE;
 		rta->rta_len = RTA_LENGTH(sizeof(char));
 		*((char *) RTA_DATA(rta)) = linkmode;
@@ -102,7 +208,7 @@ static int wpa_driver_wext_send_oper_ifla(struct wpa_driver_wext_data *drv,
 }
 
 
-int wpa_driver_wext_set_auth_param(struct wpa_driver_wext_data *drv,
+int wpa_driver_ar6000_set_auth_param(struct wpa_driver_ar6000_data *drv,
 				   int idx, u32 value)
 {
 	struct iwreq iwr;
@@ -127,14 +233,14 @@ int wpa_driver_wext_set_auth_param(struct wpa_driver_wext_data *drv,
 
 
 /**
- * wpa_driver_wext_get_bssid - Get BSSID, SIOCGIWAP
- * @priv: Pointer to private wext data from wpa_driver_wext_init()
+ * wpa_driver_ar6000_get_bssid - Get BSSID, SIOCGIWAP
+ * @priv: Pointer to private wext data from wpa_driver_ar6000_init()
  * @bssid: Buffer for BSSID
  * Returns: 0 on success, -1 on failure
  */
-int wpa_driver_wext_get_bssid(void *priv, u8 *bssid)
+int wpa_driver_ar6000_get_bssid(void *priv, u8 *bssid)
 {
-	struct wpa_driver_wext_data *drv = priv;
+	struct wpa_driver_ar6000_data *drv = priv;
 	struct iwreq iwr;
 	int ret = 0;
 
@@ -142,7 +248,7 @@ int wpa_driver_wext_get_bssid(void *priv, u8 *bssid)
 	os_strlcpy(iwr.ifr_name, drv->ifname, IFNAMSIZ);
 
 	if (ioctl(drv->ioctl_sock, SIOCGIWAP, &iwr) < 0) {
-		wpa_printf(MSG_ERROR, "ioctl[SIOCGIWAP]");
+		perror("ioctl[SIOCGIWAP]");
 		ret = -1;
 	}
 	os_memcpy(bssid, iwr.u.ap_addr.sa_data, ETH_ALEN);
@@ -152,14 +258,14 @@ int wpa_driver_wext_get_bssid(void *priv, u8 *bssid)
 
 
 /**
- * wpa_driver_wext_set_bssid - Set BSSID, SIOCSIWAP
- * @priv: Pointer to private wext data from wpa_driver_wext_init()
+ * wpa_driver_ar6000_set_bssid - Set BSSID, SIOCSIWAP
+ * @priv: Pointer to private wext data from wpa_driver_ar6000_init()
  * @bssid: BSSID
  * Returns: 0 on success, -1 on failure
  */
-int wpa_driver_wext_set_bssid(void *priv, const u8 *bssid)
+int wpa_driver_ar6000_set_bssid(void *priv, const u8 *bssid)
 {
-	struct wpa_driver_wext_data *drv = priv;
+	struct wpa_driver_ar6000_data *drv = priv;
 	struct iwreq iwr;
 	int ret = 0;
 
@@ -172,7 +278,7 @@ int wpa_driver_wext_set_bssid(void *priv, const u8 *bssid)
 		os_memset(iwr.u.ap_addr.sa_data, 0, ETH_ALEN);
 
 	if (ioctl(drv->ioctl_sock, SIOCSIWAP, &iwr) < 0) {
-		wpa_printf(MSG_ERROR, "ioctl[SIOCSIWAP]");
+		perror("ioctl[SIOCSIWAP]");
 		ret = -1;
 	}
 
@@ -181,14 +287,14 @@ int wpa_driver_wext_set_bssid(void *priv, const u8 *bssid)
 
 
 /**
- * wpa_driver_wext_get_ssid - Get SSID, SIOCGIWESSID
- * @priv: Pointer to private wext data from wpa_driver_wext_init()
+ * wpa_driver_ar6000_get_ssid - Get SSID, SIOCGIWESSID
+ * @priv: Pointer to private wext data from wpa_driver_ar6000_init()
  * @ssid: Buffer for the SSID; must be at least 32 bytes long
  * Returns: SSID length on success, -1 on failure
  */
-int wpa_driver_wext_get_ssid(void *priv, u8 *ssid)
+int wpa_driver_ar6000_get_ssid(void *priv, u8 *ssid)
 {
-	struct wpa_driver_wext_data *drv = priv;
+	struct wpa_driver_ar6000_data *drv = priv;
 	struct iwreq iwr;
 	int ret = 0;
 
@@ -198,7 +304,7 @@ int wpa_driver_wext_get_ssid(void *priv, u8 *ssid)
 	iwr.u.essid.length = 32;
 
 	if (ioctl(drv->ioctl_sock, SIOCGIWESSID, &iwr) < 0) {
-		wpa_printf(MSG_ERROR, "ioctl[SIOCGIWESSID]");
+		perror("ioctl[SIOCGIWESSID]");
 		ret = -1;
 	} else {
 		ret = iwr.u.essid.length;
@@ -218,15 +324,15 @@ int wpa_driver_wext_get_ssid(void *priv, u8 *ssid)
 
 
 /**
- * wpa_driver_wext_set_ssid - Set SSID, SIOCSIWESSID
- * @priv: Pointer to private wext data from wpa_driver_wext_init()
+ * wpa_driver_ar6000_set_ssid - Set SSID, SIOCSIWESSID
+ * @priv: Pointer to private wext data from wpa_driver_ar6000_init()
  * @ssid: SSID
  * @ssid_len: Length of SSID (0..32)
  * Returns: 0 on success, -1 on failure
  */
-int wpa_driver_wext_set_ssid(void *priv, const u8 *ssid, size_t ssid_len)
+int wpa_driver_ar6000_set_ssid(void *priv, const u8 *ssid, size_t ssid_len)
 {
-	struct wpa_driver_wext_data *drv = priv;
+	struct wpa_driver_ar6000_data *drv = priv;
 	struct iwreq iwr;
 	int ret = 0;
 	char buf[33];
@@ -256,7 +362,7 @@ int wpa_driver_wext_set_ssid(void *priv, const u8 *ssid, size_t ssid_len)
 	iwr.u.essid.length = ssid_len;
 
 	if (ioctl(drv->ioctl_sock, SIOCSIWESSID, &iwr) < 0) {
-		wpa_printf(MSG_ERROR, "ioctl[SIOCSIWESSID]");
+		perror("ioctl[SIOCSIWESSID]");
 		ret = -1;
 	}
 
@@ -265,14 +371,14 @@ int wpa_driver_wext_set_ssid(void *priv, const u8 *ssid, size_t ssid_len)
 
 
 /**
- * wpa_driver_wext_set_freq - Set frequency/channel, SIOCSIWFREQ
- * @priv: Pointer to private wext data from wpa_driver_wext_init()
+ * wpa_driver_ar6000_set_freq - Set frequency/channel, SIOCSIWFREQ
+ * @priv: Pointer to private wext data from wpa_driver_ar6000_init()
  * @freq: Frequency in MHz
  * Returns: 0 on success, -1 on failure
  */
-int wpa_driver_wext_set_freq(void *priv, int freq)
+int wpa_driver_ar6000_set_freq(void *priv, int freq)
 {
-	struct wpa_driver_wext_data *drv = priv;
+	struct wpa_driver_ar6000_data *drv = priv;
 	struct iwreq iwr;
 	int ret = 0;
 
@@ -282,7 +388,7 @@ int wpa_driver_wext_set_freq(void *priv, int freq)
 	iwr.u.freq.e = 1;
 
 	if (ioctl(drv->ioctl_sock, SIOCSIWFREQ, &iwr) < 0) {
-		wpa_printf(MSG_ERROR, "ioctl[SIOCSIWFREQ]");
+		perror("ioctl[SIOCSIWFREQ]");
 		ret = -1;
 	}
 
@@ -291,7 +397,7 @@ int wpa_driver_wext_set_freq(void *priv, int freq)
 
 
 static void
-wpa_driver_wext_event_wireless_custom(void *ctx, char *custom)
+wpa_driver_ar6000_event_wireless_custom(struct wpa_driver_ar6000_data *drv, void *ctx, char *custom)
 {
 	union wpa_event_data data;
 
@@ -349,6 +455,49 @@ wpa_driver_wext_event_wireless_custom(void *ctx, char *custom)
 	done:
 		os_free(data.assoc_info.resp_ies);
 		os_free(data.assoc_info.req_ies);
+//Atheros
+	} else if (strncmp(custom, "PRE-AUTH", 8) == 0) {
+		u8 res;
+		int bytes;
+		char *spos;
+
+		spos = custom + 8;
+
+		bytes = strspn(spos, "0123456789abcdefABCDEF");
+		if (!bytes || (bytes & 1))
+			return;
+		bytes /= 2;
+
+		if (bytes < 8)
+			return;
+
+		hexstr2bin(spos, data.pmkid_candidate.bssid, ETH_ALEN);
+		spos += ETH_ALEN * 2;
+		hexstr2bin(spos, &res, 1);
+		data.pmkid_candidate.index = res;
+		spos += 2;
+		hexstr2bin(spos, &res, 1);
+		data.pmkid_candidate.preauth = res;
+		wpa_supplicant_event(ctx, EVENT_PMKID_CANDIDATE, &data);
+	} else if (strncmp(custom, "ASSOCRESPIE=", 12) == 0) {
+		int bytes;
+		char *spos;
+
+		spos = custom + 12;
+		bytes = strspn(spos, "0123456789abcdefABCDEF");
+		if (!bytes || (bytes & 1))
+			return;
+		bytes /= 2;
+
+		free(drv->assoc_resp_ies);
+		drv->assoc_resp_ies = malloc(bytes);
+		if (drv->assoc_resp_ies == NULL) {
+			drv->assoc_resp_ies_len = 0;
+			return;
+		}
+		hexstr2bin(spos, drv->assoc_resp_ies, bytes);
+		drv->assoc_resp_ies_len = bytes;
+//Atheros
 #ifdef CONFIG_PEERKEY
 	} else if (os_strncmp(custom, "STKSTART.request=", 17) == 0) {
 		if (hwaddr_aton(custom + 17, data.stkstart.peer)) {
@@ -363,14 +512,12 @@ wpa_driver_wext_event_wireless_custom(void *ctx, char *custom)
 		wpa_msg(ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "STOPPED");
 	} else if (os_strncmp(custom, "START", 5) == 0) {
 		wpa_msg(ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "STARTED");
-	} else if (os_strncmp(custom, "HANG", 4) == 0) {
-		wpa_msg(ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "HANGED");
-#endif /* ANDROID */
+#endif // ANDROID
 	}
 }
 
 
-static int wpa_driver_wext_event_wireless_michaelmicfailure(
+static int wpa_driver_ar6000_event_wireless_michaelmicfailure(
 	void *ctx, const char *ev, size_t len)
 {
 	const struct iw_michaelmicfailure *mic;
@@ -393,8 +540,8 @@ static int wpa_driver_wext_event_wireless_michaelmicfailure(
 }
 
 
-static int wpa_driver_wext_event_wireless_pmkidcand(
-	struct wpa_driver_wext_data *drv, const char *ev, size_t len)
+static int wpa_driver_ar6000_event_wireless_pmkidcand(
+	struct wpa_driver_ar6000_data *drv, const char *ev, size_t len)
 {
 	const struct iw_pmkid_cand *cand;
 	union wpa_event_data data;
@@ -420,8 +567,8 @@ static int wpa_driver_wext_event_wireless_pmkidcand(
 }
 
 
-static int wpa_driver_wext_event_wireless_assocreqie(
-	struct wpa_driver_wext_data *drv, const char *ev, int len)
+static int wpa_driver_ar6000_event_wireless_assocreqie(
+	struct wpa_driver_ar6000_data *drv, const char *ev, int len)
 {
 	if (len < 0)
 		return -1;
@@ -441,8 +588,8 @@ static int wpa_driver_wext_event_wireless_assocreqie(
 }
 
 
-static int wpa_driver_wext_event_wireless_assocrespie(
-	struct wpa_driver_wext_data *drv, const char *ev, int len)
+static int wpa_driver_ar6000_event_wireless_assocrespie(
+	struct wpa_driver_ar6000_data *drv, const char *ev, int len)
 {
 	if (len < 0)
 		return -1;
@@ -462,7 +609,7 @@ static int wpa_driver_wext_event_wireless_assocrespie(
 }
 
 
-static void wpa_driver_wext_event_assoc_ies(struct wpa_driver_wext_data *drv)
+static void wpa_driver_ar6000_event_assoc_ies(struct wpa_driver_ar6000_data *drv)
 {
 	union wpa_event_data data;
 
@@ -488,7 +635,7 @@ static void wpa_driver_wext_event_assoc_ies(struct wpa_driver_wext_data *drv)
 }
 
 
-static void wpa_driver_wext_event_wireless(struct wpa_driver_wext_data *drv,
+static void wpa_driver_ar6000_event_wireless(struct wpa_driver_ar6000_data *drv,
 					   void *ctx, char *data, int len)
 {
 	struct iw_event iwe_buf, *iwe = &iwe_buf;
@@ -501,8 +648,10 @@ static void wpa_driver_wext_event_wireless(struct wpa_driver_wext_data *drv,
 		/* Event data may be unaligned, so make a local, aligned copy
 		 * before processing. */
 		os_memcpy(&iwe_buf, pos, IW_EV_LCP_LEN);
-		wpa_printf(MSG_DEBUG, "Wireless event: cmd=0x%x len=%d",
-			   iwe->cmd, iwe->len);
+		if (iwe->cmd != IWEVGENIE) {
+			wpa_printf(MSG_DEBUG, "Wireless event: cmd=0x%x len=%d",
+				   iwe->cmd, iwe->len);
+		}
 		if (iwe->len <= IW_EV_LCP_LEN)
 			return;
 
@@ -537,22 +686,14 @@ static void wpa_driver_wext_event_wireless(struct wpa_driver_wext_data *drv,
 				drv->assoc_req_ies = NULL;
 				os_free(drv->assoc_resp_ies);
 				drv->assoc_resp_ies = NULL;
-#ifdef ANDROID
 				if (!drv->skip_disconnect) {
 					drv->skip_disconnect = 1;
-#endif
-					wpa_supplicant_event(ctx, EVENT_DISASSOC,
+				wpa_supplicant_event(ctx, EVENT_DISASSOC,
 						     NULL);
-#ifdef ANDROID
-					wpa_driver_wext_disconnect(drv);
 				}
-#endif
-			
 			} else {
-#ifdef ANDROID
 				drv->skip_disconnect = 0;
-#endif
-				wpa_driver_wext_event_assoc_ies(drv);
+				wpa_driver_ar6000_event_assoc_ies(drv);
 				wpa_supplicant_event(ctx, EVENT_ASSOC, NULL);
 			}
 			break;
@@ -562,7 +703,7 @@ static void wpa_driver_wext_event_wireless(struct wpa_driver_wext_data *drv,
 					   "IWEVMICHAELMICFAILURE length");
 				return;
 			}
-			wpa_driver_wext_event_wireless_michaelmicfailure(
+			wpa_driver_ar6000_event_wireless_michaelmicfailure(
 				ctx, custom, iwe->u.data.length);
 			break;
 		case IWEVCUSTOM:
@@ -576,12 +717,17 @@ static void wpa_driver_wext_event_wireless(struct wpa_driver_wext_data *drv,
 				return;
 			os_memcpy(buf, custom, iwe->u.data.length);
 			buf[iwe->u.data.length] = '\0';
-			wpa_driver_wext_event_wireless_custom(ctx, buf);
+#ifdef ANDROID
+			if (os_strncmp(buf, "HOST_ASLEEP=", 12) == 0) {
+				drv->host_asleep = (os_strncmp(buf+12, "asleep", 6)==0);
+			}
+#endif
+			wpa_driver_ar6000_event_wireless_custom(drv, ctx, buf);
 			os_free(buf);
 			break;
 		case SIOCGIWSCAN:
 			drv->scan_complete_events = 1;
-			eloop_cancel_timeout(wpa_driver_wext_scan_timeout,
+			eloop_cancel_timeout(wpa_driver_ar6000_scan_timeout,
 					     drv, ctx);
 			wpa_supplicant_event(ctx, EVENT_SCAN_RESULTS, NULL);
 			break;
@@ -591,7 +737,7 @@ static void wpa_driver_wext_event_wireless(struct wpa_driver_wext_data *drv,
 					   "IWEVASSOCREQIE length");
 				return;
 			}
-			wpa_driver_wext_event_wireless_assocreqie(
+			wpa_driver_ar6000_event_wireless_assocreqie(
 				drv, custom, iwe->u.data.length);
 			break;
 		case IWEVASSOCRESPIE:
@@ -600,7 +746,7 @@ static void wpa_driver_wext_event_wireless(struct wpa_driver_wext_data *drv,
 					   "IWEVASSOCRESPIE length");
 				return;
 			}
-			wpa_driver_wext_event_wireless_assocrespie(
+			wpa_driver_ar6000_event_wireless_assocrespie(
 				drv, custom, iwe->u.data.length);
 			break;
 		case IWEVPMKIDCAND:
@@ -609,7 +755,7 @@ static void wpa_driver_wext_event_wireless(struct wpa_driver_wext_data *drv,
 					   "IWEVPMKIDCAND length");
 				return;
 			}
-			wpa_driver_wext_event_wireless_pmkidcand(
+			wpa_driver_ar6000_event_wireless_pmkidcand(
 				drv, custom, iwe->u.data.length);
 			break;
 		}
@@ -619,7 +765,7 @@ static void wpa_driver_wext_event_wireless(struct wpa_driver_wext_data *drv,
 }
 
 
-static void wpa_driver_wext_event_link(struct wpa_driver_wext_data *drv,
+static void wpa_driver_ar6000_event_link(struct wpa_driver_ar6000_data *drv,
 				       void *ctx, char *buf, size_t len,
 				       int del)
 {
@@ -648,7 +794,7 @@ static void wpa_driver_wext_event_link(struct wpa_driver_wext_data *drv,
 }
 
 
-static int wpa_driver_wext_own_ifname(struct wpa_driver_wext_data *drv,
+static int wpa_driver_ar6000_own_ifname(struct wpa_driver_ar6000_data *drv,
 				      struct nlmsghdr *h)
 {
 	struct ifinfomsg *ifi;
@@ -681,17 +827,17 @@ static int wpa_driver_wext_own_ifname(struct wpa_driver_wext_data *drv,
 }
 
 
-static int wpa_driver_wext_own_ifindex(struct wpa_driver_wext_data *drv,
+static int wpa_driver_ar6000_own_ifindex(struct wpa_driver_ar6000_data *drv,
 				       int ifindex, struct nlmsghdr *h)
 {
 	if (drv->ifindex == ifindex || drv->ifindex2 == ifindex)
 		return 1;
 
-	if (drv->if_removed && wpa_driver_wext_own_ifname(drv, h)) {
+	if (drv->if_removed && wpa_driver_ar6000_own_ifname(drv, h)) {
 		drv->ifindex = if_nametoindex(drv->ifname);
 		wpa_printf(MSG_DEBUG, "WEXT: Update ifindex for a removed "
 			   "interface");
-		wpa_driver_wext_finish_drv_init(drv);
+		wpa_driver_ar6000_finish_drv_init(drv);
 		return 1;
 	}
 
@@ -699,7 +845,7 @@ static int wpa_driver_wext_own_ifindex(struct wpa_driver_wext_data *drv,
 }
 
 
-static void wpa_driver_wext_event_rtm_newlink(struct wpa_driver_wext_data *drv,
+static void wpa_driver_ar6000_event_rtm_newlink(struct wpa_driver_ar6000_data *drv,
 					      void *ctx, struct nlmsghdr *h,
 					      size_t len)
 {
@@ -712,13 +858,13 @@ static void wpa_driver_wext_event_rtm_newlink(struct wpa_driver_wext_data *drv,
 
 	ifi = NLMSG_DATA(h);
 
-	if (!wpa_driver_wext_own_ifindex(drv, ifi->ifi_index, h)) {
+	if (!wpa_driver_ar6000_own_ifindex(drv, ifi->ifi_index, h)) {
 		wpa_printf(MSG_DEBUG, "Ignore event for foreign ifindex %d",
 			   ifi->ifi_index);
 		return;
 	}
-
-	wpa_printf(MSG_DEBUG, "RTM_NEWLINK: operstate=%d ifi_flags=0x%x "
+	if (ifi->ifi_change & IFF_UP)
+		wpa_printf(MSG_DEBUG, "RTM_NEWLINK: operstate=%d ifi_flags=0x%x "
 		   "(%s%s%s%s)",
 		   drv->operstate, ifi->ifi_flags,
 		   (ifi->ifi_flags & IFF_UP) ? "[UP]" : "",
@@ -727,14 +873,14 @@ static void wpa_driver_wext_event_rtm_newlink(struct wpa_driver_wext_data *drv,
 		   (ifi->ifi_flags & IFF_DORMANT) ? "[DORMANT]" : "");
 	/*
 	 * Some drivers send the association event before the operup event--in
-	 * this case, lifting operstate in wpa_driver_wext_set_operstate()
+	 * this case, lifting operstate in wpa_driver_ar6000_set_operstate()
 	 * fails. This will hit us when wpa_supplicant does not need to do
 	 * IEEE 802.1X authentication
 	 */
 	if (drv->operstate == 1 &&
 	    (ifi->ifi_flags & (IFF_LOWER_UP | IFF_DORMANT)) == IFF_LOWER_UP &&
 	    !(ifi->ifi_flags & IFF_RUNNING))
-		wpa_driver_wext_send_oper_ifla(drv, -1, IF_OPER_UP);
+		wpa_driver_ar6000_send_oper_ifla(drv, -1, IF_OPER_UP);
 
 	nlmsg_len = NLMSG_ALIGN(sizeof(struct ifinfomsg));
 
@@ -747,20 +893,22 @@ static void wpa_driver_wext_event_rtm_newlink(struct wpa_driver_wext_data *drv,
 	rta_len = RTA_ALIGN(sizeof(struct rtattr));
 	while (RTA_OK(attr, attrlen)) {
 		if (attr->rta_type == IFLA_WIRELESS) {
-			wpa_driver_wext_event_wireless(
+			wpa_driver_ar6000_event_wireless(
 				drv, ctx, ((char *) attr) + rta_len,
 				attr->rta_len - rta_len);
 		} else if (attr->rta_type == IFLA_IFNAME) {
-			wpa_driver_wext_event_link(drv, ctx,
+			if (ifi->ifi_change & IFF_UP) {
+				wpa_driver_ar6000_event_link(drv, ctx,
 						   ((char *) attr) + rta_len,
 						   attr->rta_len - rta_len, 0);
+			}
 		}
 		attr = RTA_NEXT(attr, attrlen);
 	}
 }
 
 
-static void wpa_driver_wext_event_rtm_dellink(struct wpa_driver_wext_data *drv,
+static void wpa_driver_ar6000_event_rtm_dellink(struct wpa_driver_ar6000_data *drv,
 					      void *ctx, struct nlmsghdr *h,
 					      size_t len)
 {
@@ -784,7 +932,7 @@ static void wpa_driver_wext_event_rtm_dellink(struct wpa_driver_wext_data *drv,
 	rta_len = RTA_ALIGN(sizeof(struct rtattr));
 	while (RTA_OK(attr, attrlen)) {
 		if (attr->rta_type == IFLA_IFNAME) {
-			wpa_driver_wext_event_link(drv,  ctx,
+			wpa_driver_ar6000_event_link(drv,  ctx,
 						   ((char *) attr) + rta_len,
 						   attr->rta_len - rta_len, 1);
 		}
@@ -793,7 +941,7 @@ static void wpa_driver_wext_event_rtm_dellink(struct wpa_driver_wext_data *drv,
 }
 
 
-static void wpa_driver_wext_event_receive(int sock, void *eloop_ctx,
+static void wpa_driver_ar6000_event_receive(int sock, void *eloop_ctx,
 					  void *sock_ctx)
 {
 	char buf[8192];
@@ -809,7 +957,7 @@ try_again:
 			(struct sockaddr *) &from, &fromlen);
 	if (left < 0) {
 		if (errno != EINTR && errno != EAGAIN)
-			wpa_printf(MSG_ERROR, "%s: recvfrom(netlink): %d", __func__, errno);
+			perror("recvfrom(netlink)");
 		return;
 	}
 
@@ -828,11 +976,11 @@ try_again:
 
 		switch (h->nlmsg_type) {
 		case RTM_NEWLINK:
-			wpa_driver_wext_event_rtm_newlink(eloop_ctx, sock_ctx,
+			wpa_driver_ar6000_event_rtm_newlink(eloop_ctx, sock_ctx,
 							  h, plen);
 			break;
 		case RTM_DELLINK:
-			wpa_driver_wext_event_rtm_dellink(eloop_ctx, sock_ctx,
+			wpa_driver_ar6000_event_rtm_dellink(eloop_ctx, sock_ctx,
 							  h, plen);
 			break;
 		}
@@ -860,7 +1008,7 @@ try_again:
 }
 
 
-static int wpa_driver_wext_get_ifflags_ifname(struct wpa_driver_wext_data *drv,
+static int wpa_driver_ar6000_get_ifflags_ifname(struct wpa_driver_ar6000_data *drv,
 					      const char *ifname, int *flags)
 {
 	struct ifreq ifr;
@@ -868,7 +1016,7 @@ static int wpa_driver_wext_get_ifflags_ifname(struct wpa_driver_wext_data *drv,
 	os_memset(&ifr, 0, sizeof(ifr));
 	os_strlcpy(ifr.ifr_name, ifname, IFNAMSIZ);
 	if (ioctl(drv->ioctl_sock, SIOCGIFFLAGS, (caddr_t) &ifr) < 0) {
-		wpa_printf(MSG_ERROR, "ioctl[SIOCGIFFLAGS]");
+		perror("ioctl[SIOCGIFFLAGS]");
 		return -1;
 	}
 	*flags = ifr.ifr_flags & 0xffff;
@@ -877,18 +1025,18 @@ static int wpa_driver_wext_get_ifflags_ifname(struct wpa_driver_wext_data *drv,
 
 
 /**
- * wpa_driver_wext_get_ifflags - Get interface flags (SIOCGIFFLAGS)
+ * wpa_driver_ar6000_get_ifflags - Get interface flags (SIOCGIFFLAGS)
  * @drv: driver_wext private data
  * @flags: Pointer to returned flags value
  * Returns: 0 on success, -1 on failure
  */
-int wpa_driver_wext_get_ifflags(struct wpa_driver_wext_data *drv, int *flags)
+int wpa_driver_ar6000_get_ifflags(struct wpa_driver_ar6000_data *drv, int *flags)
 {
-	return wpa_driver_wext_get_ifflags_ifname(drv, drv->ifname, flags);
+	return wpa_driver_ar6000_get_ifflags_ifname(drv, drv->ifname, flags);
 }
 
 
-static int wpa_driver_wext_set_ifflags_ifname(struct wpa_driver_wext_data *drv,
+static int wpa_driver_ar6000_set_ifflags_ifname(struct wpa_driver_ar6000_data *drv,
 					      const char *ifname, int flags)
 {
 	struct ifreq ifr;
@@ -897,7 +1045,7 @@ static int wpa_driver_wext_set_ifflags_ifname(struct wpa_driver_wext_data *drv,
 	os_strlcpy(ifr.ifr_name, ifname, IFNAMSIZ);
 	ifr.ifr_flags = flags & 0xffff;
 	if (ioctl(drv->ioctl_sock, SIOCSIFFLAGS, (caddr_t) &ifr) < 0) {
-		wpa_printf(MSG_ERROR, "ioctl[SIOCSIFFLAGS]");
+		perror("SIOCSIFFLAGS");
 		return -1;
 	}
 	return 0;
@@ -905,46 +1053,49 @@ static int wpa_driver_wext_set_ifflags_ifname(struct wpa_driver_wext_data *drv,
 
 
 /**
- * wpa_driver_wext_set_ifflags - Set interface flags (SIOCSIFFLAGS)
+ * wpa_driver_ar6000_set_ifflags - Set interface flags (SIOCSIFFLAGS)
  * @drv: driver_wext private data
  * @flags: New value for flags
  * Returns: 0 on success, -1 on failure
  */
-int wpa_driver_wext_set_ifflags(struct wpa_driver_wext_data *drv, int flags)
+int wpa_driver_ar6000_set_ifflags(struct wpa_driver_ar6000_data *drv, int flags)
 {
-	return wpa_driver_wext_set_ifflags_ifname(drv, drv->ifname, flags);
+	return wpa_driver_ar6000_set_ifflags_ifname(drv, drv->ifname, flags);
 }
 
 
 /**
- * wpa_driver_wext_init - Initialize WE driver interface
+ * wpa_driver_ar6000_init - Initialize WE driver interface
  * @ctx: context to be used when calling wpa_supplicant functions,
  * e.g., wpa_supplicant_event()
  * @ifname: interface name, e.g., wlan0
  * Returns: Pointer to private data, %NULL on failure
  */
-void * wpa_driver_wext_init(void *ctx, const char *ifname)
+void * wpa_driver_ar6000_init(void *ctx, const char *ifname)
 {
 	int s;
 	struct sockaddr_nl local;
-	struct wpa_driver_wext_data *drv;
+	struct wpa_driver_ar6000_data *drv;
 
 	drv = os_zalloc(sizeof(*drv));
 	if (drv == NULL)
 		return NULL;
 	drv->ctx = ctx;
 	os_strlcpy(drv->ifname, ifname, sizeof(drv->ifname));
+#ifdef ANDROID
+	drv->scan_channels = 11;
+#endif
 
 	drv->ioctl_sock = socket(PF_INET, SOCK_DGRAM, 0);
 	if (drv->ioctl_sock < 0) {
-		wpa_printf(MSG_ERROR, "%s: socket(PF_INET,SOCK_DGRAM)", __func__);
+		perror("socket(PF_INET,SOCK_DGRAM)");
 		os_free(drv);
 		return NULL;
 	}
 
 	s = socket(PF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
 	if (s < 0) {
-		wpa_printf(MSG_ERROR, "%s: socket(PF_NETLINK,SOCK_RAW,NETLINK_ROUTE)", __func__);
+		perror("socket(PF_NETLINK,SOCK_RAW,NETLINK_ROUTE)");
 		close(drv->ioctl_sock);
 		os_free(drv);
 		return NULL;
@@ -954,37 +1105,34 @@ void * wpa_driver_wext_init(void *ctx, const char *ifname)
 	local.nl_family = AF_NETLINK;
 	local.nl_groups = RTMGRP_LINK;
 	if (bind(s, (struct sockaddr *) &local, sizeof(local)) < 0) {
-		wpa_printf(MSG_ERROR, "bind(netlink)");
+		perror("bind(netlink)");
 		close(s);
 		close(drv->ioctl_sock);
 		os_free(drv);
 		return NULL;
 	}
 
-	eloop_register_read_sock(s, wpa_driver_wext_event_receive, drv, ctx);
+	eloop_register_read_sock(s, wpa_driver_ar6000_event_receive, drv, ctx);
 	drv->event_sock = s;
 
 	drv->mlme_sock = -1;
-#ifdef ANDROID
 	drv->errors = 0;
-	drv->driver_is_started = TRUE;
+	drv->driver_is_loaded = TRUE;
 	drv->skip_disconnect = 0;
-	drv->bgscan_enabled = 0;
-#endif
-	wpa_driver_wext_finish_drv_init(drv);
+	wpa_driver_ar6000_finish_drv_init(drv);
 
 	return drv;
 }
 
 
-static void wpa_driver_wext_finish_drv_init(struct wpa_driver_wext_data *drv)
+static void wpa_driver_ar6000_finish_drv_init(struct wpa_driver_ar6000_data *drv)
 {
 	int flags;
 
-	if (wpa_driver_wext_get_ifflags(drv, &flags) != 0)
+	if (wpa_driver_ar6000_get_ifflags(drv, &flags) != 0)
 		printf("Could not get interface '%s' flags\n", drv->ifname);
 	else if (!(flags & IFF_UP)) {
-		if (wpa_driver_wext_set_ifflags(drv, flags | IFF_UP) != 0) {
+		if (wpa_driver_ar6000_set_ifflags(drv, flags | IFF_UP) != 0) {
 			printf("Could not set interface '%s' UP\n",
 			       drv->ifname);
 		} else {
@@ -1004,20 +1152,20 @@ static void wpa_driver_wext_finish_drv_init(struct wpa_driver_wext_data *drv)
 	/*
 	 * Make sure that the driver does not have any obsolete PMKID entries.
 	 */
-	wpa_driver_wext_flush_pmkid(drv);
+	wpa_driver_ar6000_flush_pmkid(drv);
 
-	if (wpa_driver_wext_set_mode(drv, 0) < 0) {
+	if (wpa_driver_ar6000_set_mode(drv, 0) < 0) {
 		printf("Could not configure driver to use managed mode\n");
 	}
 
-	wpa_driver_wext_get_range(drv);
+	wpa_driver_ar6000_get_range(drv);
 
 	/*
 	 * Unlock the driver's BSSID and force to a random SSID to clear any
 	 * previous association the driver might have when the supplicant
 	 * starts up.
 	 */
-	wpa_driver_wext_disconnect(drv);
+	wpa_driver_ar6000_disconnect(drv);
 
 	drv->ifindex = if_nametoindex(drv->ifname);
 
@@ -1033,41 +1181,41 @@ static void wpa_driver_wext_finish_drv_init(struct wpa_driver_wext_data *drv)
 		char ifname2[IFNAMSIZ + 1];
 		os_strlcpy(ifname2, drv->ifname, sizeof(ifname2));
 		os_memcpy(ifname2, "wifi", 4);
-		wpa_driver_wext_alternative_ifindex(drv, ifname2);
+		wpa_driver_ar6000_alternative_ifindex(drv, ifname2);
 	}
 
-	wpa_driver_wext_send_oper_ifla(drv, 1, IF_OPER_DORMANT);
+	wpa_driver_ar6000_send_oper_ifla(drv, 1, IF_OPER_DORMANT);
 }
 
 
 /**
- * wpa_driver_wext_deinit - Deinitialize WE driver interface
- * @priv: Pointer to private wext data from wpa_driver_wext_init()
+ * wpa_driver_ar6000_deinit - Deinitialize WE driver interface
+ * @priv: Pointer to private wext data from wpa_driver_ar6000_init()
  *
  * Shut down driver interface and processing of driver events. Free
- * private data buffer if one was allocated in wpa_driver_wext_init().
+ * private data buffer if one was allocated in wpa_driver_ar6000_init().
  */
-void wpa_driver_wext_deinit(void *priv)
+void wpa_driver_ar6000_deinit(void *priv)
 {
-	struct wpa_driver_wext_data *drv = priv;
+	struct wpa_driver_ar6000_data *drv = priv;
 	int flags;
 
-	eloop_cancel_timeout(wpa_driver_wext_scan_timeout, drv, drv->ctx);
+	eloop_cancel_timeout(wpa_driver_ar6000_scan_timeout, drv, drv->ctx);
 
 	/*
 	 * Clear possibly configured driver parameters in order to make it
 	 * easier to use the driver after wpa_supplicant has been terminated.
 	 */
-	wpa_driver_wext_disconnect(drv);
+	wpa_driver_ar6000_disconnect(drv);
 
-	wpa_driver_wext_send_oper_ifla(priv, 0, IF_OPER_UP);
+	wpa_driver_ar6000_send_oper_ifla(priv, 0, IF_OPER_UP);
 
 	eloop_unregister_read_sock(drv->event_sock);
 	if (drv->mlme_sock >= 0)
 		eloop_unregister_read_sock(drv->mlme_sock);
 
-	if (wpa_driver_wext_get_ifflags(drv, &flags) == 0)
-		(void) wpa_driver_wext_set_ifflags(drv, flags & ~IFF_UP);
+	if (wpa_driver_ar6000_get_ifflags(drv, &flags) == 0)
+		(void) wpa_driver_ar6000_set_ifflags(drv, flags & ~IFF_UP);
 
 	close(drv->event_sock);
 	close(drv->ioctl_sock);
@@ -1078,70 +1226,39 @@ void wpa_driver_wext_deinit(void *priv)
 	os_free(drv);
 }
 
+
 /**
- * wpa_driver_wext_scan_timeout - Scan timeout to report scan completion
+ * wpa_driver_ar6000_scan_timeout - Scan timeout to report scan completion
  * @eloop_ctx: Unused
- * @timeout_ctx: ctx argument given to wpa_driver_wext_init()
+ * @timeout_ctx: ctx argument given to wpa_driver_ar6000_init()
  *
  * This function can be used as registered timeout when starting a scan to
  * generate a scan completed event if the driver does not report this.
  */
-void wpa_driver_wext_scan_timeout(void *eloop_ctx, void *timeout_ctx)
+void wpa_driver_ar6000_scan_timeout(void *eloop_ctx, void *timeout_ctx)
 {
 	wpa_printf(MSG_DEBUG, "Scan timeout - try to get results");
 	wpa_supplicant_event(timeout_ctx, EVENT_SCAN_RESULTS, NULL);
 }
 
-/**
- * wpa_driver_wext_set_scan_timeout - Set scan timeout to report scan completion
- * @priv:  Pointer to private wext data from wpa_driver_wext_init()
- *
- * This function can be used to set registered timeout when starting a scan to
- * generate a scan completed event if the driver does not report this.
- */
-static void wpa_driver_wext_set_scan_timeout(void *priv)
-{
-	struct wpa_driver_wext_data *drv = priv;
-	int timeout = 10; /* In case scan A and B bands it can be long */
-
-	/* Not all drivers generate "scan completed" wireless event, so try to
-	 * read results after a timeout. */
-	if (drv->scan_complete_events) {
-		/*
-		 * The driver seems to deliver SIOCGIWSCAN events to notify
-		 * when scan is complete, so use longer timeout to avoid race
-		 * conditions with scanning and following association request.
-		 */
-		timeout = 30;
-	}
-	wpa_printf(MSG_DEBUG, "Scan requested - scan timeout %d seconds",
-		   timeout);
-	eloop_cancel_timeout(wpa_driver_wext_scan_timeout, drv, drv->ctx);
-	eloop_register_timeout(timeout, 0, wpa_driver_wext_scan_timeout, drv,
-			       drv->ctx);
-}
 
 /**
- * wpa_driver_wext_scan - Request the driver to initiate scan
- * @priv: Pointer to private wext data from wpa_driver_wext_init()
+ * wpa_driver_ar6000_scan - Request the driver to initiate scan
+ * @priv: Pointer to private wext data from wpa_driver_ar6000_init()
  * @ssid: Specific SSID to scan for (ProbeReq) or %NULL to scan for
  *	all SSIDs (either active scan with broadcast SSID or passive
  *	scan
  * @ssid_len: Length of the SSID
  * Returns: 0 on success, -1 on failure
  */
-int wpa_driver_wext_scan(void *priv, const u8 *ssid, size_t ssid_len)
+int wpa_driver_ar6000_scan(void *priv, const u8 *ssid, size_t ssid_len)
 {
-	struct wpa_driver_wext_data *drv = priv;
+	struct wpa_driver_ar6000_data *drv = priv;
 	struct iwreq iwr;
-	int ret = 0;
+	int ret = 0, timeout;
 	struct iw_scan_req req;
-#ifdef ANDROID
 	struct wpa_supplicant *wpa_s = (struct wpa_supplicant *)(drv->ctx);
 	int scan_probe_flag = 0;
-#endif
-
-	wpa_printf(MSG_ERROR, "%s: Start", __func__);
 
 	if (ssid_len > IW_ESSID_MAX_SIZE) {
 		wpa_printf(MSG_DEBUG, "%s: too long SSID (%lu)",
@@ -1152,16 +1269,12 @@ int wpa_driver_wext_scan(void *priv, const u8 *ssid, size_t ssid_len)
 	os_memset(&iwr, 0, sizeof(iwr));
 	os_strlcpy(iwr.ifr_name, drv->ifname, IFNAMSIZ);
 
-#ifdef ANDROID
 	if (wpa_s->prev_scan_ssid != BROADCAST_SSID_SCAN) {
 		scan_probe_flag = wpa_s->prev_scan_ssid->scan_ssid;
 	}
 	wpa_printf(MSG_DEBUG, "%s: specific scan = %d", __func__,
 		(scan_probe_flag && (ssid && ssid_len)) ? 1 : 0);
 	if (scan_probe_flag && (ssid && ssid_len)) {
-#else
-	if (ssid && ssid_len) {
-#endif
 		os_memset(&req, 0, sizeof(req));
 		req.essid_len = ssid_len;
 		req.bssid.sa_family = ARPHRD_ETHER;
@@ -1173,111 +1286,34 @@ int wpa_driver_wext_scan(void *priv, const u8 *ssid, size_t ssid_len)
 	}
 
 	if (ioctl(drv->ioctl_sock, SIOCSIWSCAN, &iwr) < 0) {
-		wpa_printf(MSG_ERROR, "ioctl[SIOCSIWSCAN]");
+		perror("ioctl[SIOCSIWSCAN]");
 		ret = -1;
 	}
 
-	wpa_driver_wext_set_scan_timeout(priv);
+	/* Not all drivers generate "scan completed" wireless event, so try to
+	 * read results after a timeout. */
+	timeout = 5;
+#if 0
+	if (drv->scan_complete_events) {
+		/*
+		 * The driver seems to deliver SIOCGIWSCAN events to notify
+		 * when scan is complete, so use longer timeout to avoid race
+		 * conditions with scanning and following association request.
+		 */
+		timeout = 30;
+ 	}
+#endif
+	wpa_printf(MSG_DEBUG, "Scan requested (ret=%d) - scan timeout %d "
+		   "seconds", ret, timeout);
+	eloop_cancel_timeout(wpa_driver_ar6000_scan_timeout, drv, drv->ctx);
+	eloop_register_timeout(timeout, 0, wpa_driver_ar6000_scan_timeout, drv,
+			       drv->ctx);
 
 	return ret;
 }
 
-/**
- * wpa_driver_wext_combo_scan - Request the driver to initiate combo scan
- * @priv: Pointer to private wext data from wpa_driver_wext_init()
- * @ssid_ptr: Pointer to current SSID from configuration list or %NULL to
- *	scan for all SSIDs (either active scan with broadcast SSID or passive
- *	scan)
- * @ssid_conf: SSID list from the configuration
- * Returns: 0 on success, -1 on failure
- *	Also updates @ssid_ptr to next specific scan item
- */
-int wpa_driver_wext_combo_scan(void *priv, struct wpa_ssid **ssid_ptr,
-			       struct wpa_ssid *ssid_conf)
-{
-	char buf[WEXT_CSCAN_BUF_LEN];
-	struct wpa_driver_wext_data *drv = priv;
-	struct iwreq iwr;
-	int ret = 0, timeout, i = 0, bp;
-	struct wpa_ssid *ssid, *ssid_orig;
-	u8 *ssid_nm = NULL;
-	size_t ssid_len = 0;
 
-	struct wpa_supplicant *wpa_s = (struct wpa_supplicant *)(drv->ctx);
-	int scan_probe_flag = 0;
-
-	if (!drv->driver_is_started) {
-		wpa_printf(MSG_DEBUG, "%s: Driver stopped", __func__);
-		return 0;
-	}
-
-	wpa_printf(MSG_DEBUG, "%s: Start", __func__);
-
-	/* Set list of SSIDs */
-	ssid_orig = (*ssid_ptr);
-	ssid = (*ssid_ptr) ? (*ssid_ptr) : ssid_conf;
-	bp = WEXT_CSCAN_HEADER_SIZE;
-	os_memcpy(buf, WEXT_CSCAN_HEADER, bp);
-	while (i < WEXT_CSCAN_AMOUNT) {
-		if ((bp + IW_ESSID_MAX_SIZE + 10) >= (int)sizeof(buf))
-			break;
-		*ssid_ptr = ssid;
-		if (ssid == NULL)
-			break;
-		if (!ssid->disabled && ssid->scan_ssid) {
-			wpa_printf(MSG_DEBUG, "For Scan: %s", ssid->ssid);
-			buf[bp++] = WEXT_CSCAN_SSID_SECTION;
-			buf[bp++] = ssid->ssid_len;
-			os_memcpy(&buf[bp], ssid->ssid, ssid->ssid_len);
-			bp += ssid->ssid_len;
-			i++;
-		}
-		ssid = ssid->next;
-	}
-
-	/* Set list of channels */
-	buf[bp++] = WEXT_CSCAN_CHANNEL_SECTION;
-	buf[bp++] = 0;
-
-	/* Set passive dwell time (default is 250) */
-	buf[bp++] = WEXT_CSCAN_PASV_DWELL_SECTION;
-	buf[bp++] = (u8)WEXT_CSCAN_PASV_DWELL_TIME;
-	buf[bp++] = (u8)(WEXT_CSCAN_PASV_DWELL_TIME >> 8);
-
-	/* Set home dwell time (default is 40) */
-	buf[bp++] = WEXT_CSCAN_HOME_DWELL_SECTION;
-	buf[bp++] = (u8)WEXT_CSCAN_HOME_DWELL_TIME;
-	buf[bp++] = (u8)(WEXT_CSCAN_HOME_DWELL_TIME >> 8);
-
-	os_memset(&iwr, 0, sizeof(iwr));
-	os_strncpy(iwr.ifr_name, drv->ifname, IFNAMSIZ);
-	iwr.u.data.pointer = buf;
-	iwr.u.data.length = bp;
-
-	if ((ret = ioctl(drv->ioctl_sock, SIOCSIWPRIV, &iwr)) < 0) {
-		if (!drv->bgscan_enabled)
-			wpa_printf(MSG_ERROR, "ioctl[SIOCSIWPRIV] (cscan): %d", ret);
-		else
-			ret = 0;	/* Hide error in case of bg scan */
-		*ssid_ptr = ssid_orig;
-		/* goto old_scan; */
-	}
-
-	wpa_driver_wext_set_scan_timeout(priv);
-
-	return ret;
-
-old_scan:
-	if (*ssid_ptr) {
-		ssid_nm = (*ssid_ptr)->ssid;
-		ssid_len = (*ssid_ptr)->ssid_len;
-	}
-
-	return wpa_driver_wext_scan(priv, ssid_nm, ssid_len);
-}
-
-
-static u8 * wpa_driver_wext_giwscan(struct wpa_driver_wext_data *drv,
+static u8 * wpa_driver_ar6000_giwscan(struct wpa_driver_ar6000_data *drv,
 				    size_t *len)
 {
 	struct iwreq iwr;
@@ -1307,7 +1343,7 @@ static u8 * wpa_driver_wext_giwscan(struct wpa_driver_wext_data *drv,
 				   "trying larger buffer (%lu bytes)",
 				   (unsigned long) res_buf_len);
 		} else {
-			wpa_printf(MSG_ERROR, "ioctl[SIOCGIWSCAN]: %d", errno);
+			perror("ioctl[SIOCGIWSCAN]");
 			os_free(res_buf);
 			return NULL;
 		}
@@ -1410,6 +1446,9 @@ static void wext_get_scan_qual(struct iw_event *iwe,
 	res->res.qual = iwe->u.qual.qual;
 	res->res.noise = iwe->u.qual.noise;
 	res->res.level = iwe->u.qual.level;
+#ifdef ANDROID
+	res->res.level = iwe->u.qual.level - 256 + 10;
+#endif
 }
 
 
@@ -1529,10 +1568,40 @@ static void wext_get_scan_custom(struct iw_event *iwe,
 		hexstr2bin(spos, bin, bytes);
 		res->res.tsf += WPA_GET_BE64(bin);
 	}
+#ifdef CONFIG_WAPI
+	else if (clen > 8 && os_strncmp(custom, "wapi_ie=", 8) == 0 ) {
+		wpa_msg(NULL, MSG_DEBUG, "[get wapi ie]\n"); /* Dm: */
+		char *spos;
+		/* u8 bin[8]; */
+		int bytes;
+		spos = custom + 8;
+		bytes = custom + clen - spos;
+		if (bytes & 1)
+			return;
+		bytes /= 2;
+		if (bytes > SSID_MAX_WAPI_IE_LEN) {
+			wpa_printf(MSG_INFO, "Too long WAPI IE "
+					"(%d)", bytes);
+
+			return;
+		}
+
+		tmp = os_realloc(res->ie, res->ie_len + bytes);
+		if (tmp == NULL)
+			return;
+		hexstr2bin(spos, tmp + res->ie_len, bytes);
+		res->ie = tmp;
+		res->ie_len += bytes;
+		/*hexstr2bin(spos,bin,bytes);*/
+		/*results[ap_num].wapi_ie_len = bytes;*/
+		/*wpa_hexdump_ascii(MSG_DEBUG, "wapi ie", (u8 *)bin, bin[1]);*/
+	}
+#endif
+
 }
 
 
-static int wext_19_iw_point(struct wpa_driver_wext_data *drv, u16 cmd)
+static int wext_19_iw_point(struct wpa_driver_ar6000_data *drv, u16 cmd)
 {
 	return drv->we_version_compiled > 18 &&
 		(cmd == SIOCGIWESSID || cmd == SIOCGIWENCODE ||
@@ -1540,7 +1609,7 @@ static int wext_19_iw_point(struct wpa_driver_wext_data *drv, u16 cmd)
 }
 
 
-static void wpa_driver_wext_add_scan_entry(struct wpa_scan_results *res,
+static void wpa_driver_ar6000_add_scan_entry(struct wpa_scan_results *res,
 					   struct wext_scan_data *data)
 {
 	struct wpa_scan_res **tmp;
@@ -1606,16 +1675,16 @@ static void wpa_driver_wext_add_scan_entry(struct wpa_scan_results *res,
 	tmp[res->num++] = r;
 	res->res = tmp;
 }
-				      
+
 
 /**
- * wpa_driver_wext_get_scan_results - Fetch the latest scan results
- * @priv: Pointer to private wext data from wpa_driver_wext_init()
+ * wpa_driver_ar6000_get_scan_results - Fetch the latest scan results
+ * @priv: Pointer to private wext data from wpa_driver_ar6000_init()
  * Returns: Scan results on success, -1 on failure
  */
-struct wpa_scan_results * wpa_driver_wext_get_scan_results(void *priv)
+struct wpa_scan_results * wpa_driver_ar6000_get_scan_results(void *priv)
 {
-	struct wpa_driver_wext_data *drv = priv;
+	struct wpa_driver_ar6000_data *drv = priv;
 	size_t ap_num = 0, len;
 	int first;
 	u8 *res_buf;
@@ -1624,15 +1693,7 @@ struct wpa_scan_results * wpa_driver_wext_get_scan_results(void *priv)
 	struct wpa_scan_results *res;
 	struct wext_scan_data data;
 
-#ifdef ANDROID
-	/* To make sure correctly parse scan results which is impacted by wext
-	 * version, first check range->we_version, if it is default value (0),
- 	 * update again here */
- 	if (drv->we_version_compiled == 0)
-		wpa_driver_wext_get_range(drv);
-#endif
-
-	res_buf = wpa_driver_wext_giwscan(drv, &len);
+	res_buf = wpa_driver_ar6000_giwscan(drv, &len);
 	if (res_buf == NULL)
 		return NULL;
 
@@ -1671,7 +1732,7 @@ struct wpa_scan_results * wpa_driver_wext_get_scan_results(void *priv)
 		switch (iwe->cmd) {
 		case SIOCGIWAP:
 			if (!first)
-				wpa_driver_wext_add_scan_entry(res, &data);
+				wpa_driver_ar6000_add_scan_entry(res, &data);
 			first = 0;
 			os_free(data.ie);
 			os_memset(&data, 0, sizeof(data));
@@ -1709,7 +1770,7 @@ struct wpa_scan_results * wpa_driver_wext_get_scan_results(void *priv)
 	os_free(res_buf);
 	res_buf = NULL;
 	if (!first)
-		wpa_driver_wext_add_scan_entry(res, &data);
+		wpa_driver_ar6000_add_scan_entry(res, &data);
 	os_free(data.ie);
 
 	wpa_printf(MSG_DEBUG, "Received %lu bytes of scan results (%lu BSSes)",
@@ -1719,9 +1780,9 @@ struct wpa_scan_results * wpa_driver_wext_get_scan_results(void *priv)
 }
 
 
-static int wpa_driver_wext_get_range(void *priv)
+static int wpa_driver_ar6000_get_range(void *priv)
 {
-	struct wpa_driver_wext_data *drv = priv;
+	struct wpa_driver_ar6000_data *drv = priv;
 	struct iw_range *range;
 	struct iwreq iwr;
 	int minlen;
@@ -1743,9 +1804,19 @@ static int wpa_driver_wext_get_range(void *priv)
 
 	minlen = ((char *) &range->enc_capa) - (char *) range +
 		sizeof(range->enc_capa);
-
+#ifdef CONFIG_WAPI
+	while (1)
+	{
+		if (ioctl(drv->ioctl_sock, SIOCGIWRANGE, &iwr) >= 0) {
+			break;
+		} else {
+			sleep(1);
+			wpa_printf(MSG_ERROR, "ioctl[SIOCGIWRANGE]");
+		}
+	}
+#endif
 	if (ioctl(drv->ioctl_sock, SIOCGIWRANGE, &iwr) < 0) {
-		wpa_printf(MSG_ERROR, "ioctl[SIOCGIRANGE]");
+		perror("ioctl[SIOCGIWRANGE]");
 		os_free(range);
 		return -1;
 	} else if (iwr.u.data.length >= minlen &&
@@ -1790,17 +1861,17 @@ static int wpa_driver_wext_get_range(void *priv)
 }
 
 
-static int wpa_driver_wext_set_wpa(void *priv, int enabled)
+static int wpa_driver_ar6000_set_wpa(void *priv, int enabled)
 {
-	struct wpa_driver_wext_data *drv = priv;
+	struct wpa_driver_ar6000_data *drv = priv;
 	wpa_printf(MSG_DEBUG, "%s", __FUNCTION__);
 
-	return wpa_driver_wext_set_auth_param(drv, IW_AUTH_WPA_ENABLED,
+	return wpa_driver_ar6000_set_auth_param(drv, IW_AUTH_WPA_ENABLED,
 					      enabled);
 }
 
 
-static int wpa_driver_wext_set_psk(struct wpa_driver_wext_data *drv,
+static int wpa_driver_ar6000_set_psk(struct wpa_driver_ar6000_data *drv,
 				   const u8 *psk)
 {
 	struct iw_encode_ext *ext;
@@ -1830,26 +1901,36 @@ static int wpa_driver_wext_set_psk(struct wpa_driver_wext_data *drv,
 
 	ret = ioctl(drv->ioctl_sock, SIOCSIWENCODEEXT, &iwr);
 	if (ret < 0)
-		wpa_printf(MSG_ERROR, "ioctl[SIOCSIWENCODEEXT] PMK");
+		perror("ioctl[SIOCSIWENCODEEXT] PMK");
 	os_free(ext);
 
 	return ret;
 }
 
 
-static int wpa_driver_wext_set_key_ext(void *priv, wpa_alg alg,
+static int wpa_driver_ar6000_set_key_ext(void *priv, wpa_alg alg,
 				       const u8 *addr, int key_idx,
 				       int set_tx, const u8 *seq,
 				       size_t seq_len,
 				       const u8 *key, size_t key_len)
 {
-	struct wpa_driver_wext_data *drv = priv;
+	struct wpa_driver_ar6000_data *drv = priv;
 	struct iwreq iwr;
 	int ret = 0;
 	struct iw_encode_ext *ext;
 
+#ifdef CONFIG_WAPI
+	if (alg == WPA_ALG_SMS4) {
+    	if (seq_len > IW_ENCODE_SEQ_MAX_SIZE * 2) {
+        	wpa_printf(MSG_ERROR, "%s: Invalid seq_len %lu max %d\n",
+            		__FUNCTION__, (unsigned long)seq_len, IW_ENCODE_SEQ_MAX_SIZE * 2);
+            return -1;
+    	}
+    } else
+#endif
+
 	if (seq_len > IW_ENCODE_SEQ_MAX_SIZE) {
-		wpa_printf(MSG_DEBUG, "%s: Invalid seq_len %lu",
+		wpa_printf(MSG_ERROR, "%s: Invalid seq_len %lu",
 			   __FUNCTION__, (unsigned long) seq_len);
 		return -1;
 	}
@@ -1902,18 +1983,35 @@ static int wpa_driver_wext_set_key_ext(void *priv, wpa_alg alg,
 		ext->alg = IW_ENCODE_ALG_AES_CMAC;
 		break;
 #endif /* CONFIG_IEEE80211W */
+
+#ifdef CONFIG_WAPI
+	case WPA_ALG_SMS4:
+        ext->alg = IW_ENCODE_ALG_SMS4;
+        break;
+#endif
+
 	default:
-		wpa_printf(MSG_DEBUG, "%s: Unknown algorithm %d",
+		wpa_printf(MSG_ERROR, "%s: Unknown algorithm %d",
 			   __FUNCTION__, alg);
 		os_free(ext);
 		return -1;
 	}
 
 	if (seq && seq_len) {
+
+#ifdef CONFIG_WAPI
+   		if (alg == WPA_ALG_SMS4) {
+                	os_memcpy(ext->tx_seq, seq, seq_len);
+                	wpa_hexdump(MSG_DEBUG, "seq", seq, seq_len);
+        } else {
+#endif
 		ext->ext_flags |= IW_ENCODE_EXT_RX_SEQ_VALID;
 		os_memcpy(ext->rx_seq, seq, seq_len);
-	}
 
+#ifdef CONFIG_WAPI
+		}
+#endif
+	}
 	if (ioctl(drv->ioctl_sock, SIOCSIWENCODEEXT, &iwr) < 0) {
 		ret = errno == EOPNOTSUPP ? -2 : -1;
 		if (errno == ENODEV) {
@@ -1922,18 +2020,18 @@ static int wpa_driver_wext_set_key_ext(void *priv, wpa_alg alg,
 			 * code.. */
 			ret = -2;
 		}
-
-		wpa_printf(MSG_ERROR, "ioctl[SIOCSIWENCODEEXT]");
+		wpa_printf(MSG_ERROR, "Cannot set key %d\n", errno);
+		perror("ioctl[SIOCSIWENCODEEXT]");
 	}
-
+	wpa_printf(MSG_INFO, "Key set completed!\n");
 	os_free(ext);
 	return ret;
 }
 
 
 /**
- * wpa_driver_wext_set_key - Configure encryption key
- * @priv: Pointer to private wext data from wpa_driver_wext_init()
+ * wpa_driver_ar6000_set_key - Configure encryption key
+ * @priv: Pointer to private wext data from wpa_driver_ar6000_init()
  * @priv: Private driver interface data
  * @alg: Encryption algorithm (%WPA_ALG_NONE, %WPA_ALG_WEP,
  *	%WPA_ALG_TKIP, %WPA_ALG_CCMP); %WPA_ALG_NONE clears the key.
@@ -1957,21 +2055,21 @@ static int wpa_driver_wext_set_key_ext(void *priv, wpa_alg alg,
  * This function uses SIOCSIWENCODEEXT by default, but tries to use
  * SIOCSIWENCODE if the extended ioctl fails when configuring a WEP key.
  */
-int wpa_driver_wext_set_key(void *priv, wpa_alg alg,
+int wpa_driver_ar6000_set_key(void *priv, wpa_alg alg,
 			    const u8 *addr, int key_idx,
 			    int set_tx, const u8 *seq, size_t seq_len,
 			    const u8 *key, size_t key_len)
 {
-	struct wpa_driver_wext_data *drv = priv;
+	struct wpa_driver_ar6000_data *drv = priv;
 	struct iwreq iwr;
 	int ret = 0;
 
-	wpa_printf(MSG_DEBUG, "%s: alg=%d key_idx=%d set_tx=%d seq_len=%lu "
+	wpa_printf(MSG_INFO, "%s: alg=%d key_idx=%d set_tx=%d seq_len=%lu "
 		   "key_len=%lu",
 		   __FUNCTION__, alg, key_idx, set_tx,
 		   (unsigned long) seq_len, (unsigned long) key_len);
 
-	ret = wpa_driver_wext_set_key_ext(drv, alg, addr, key_idx, set_tx,
+	ret = wpa_driver_ar6000_set_key_ext(drv, alg, addr, key_idx, set_tx,
 					  seq, seq_len, key, key_len);
 	if (ret == 0)
 		return 0;
@@ -1997,7 +2095,7 @@ int wpa_driver_wext_set_key(void *priv, wpa_alg alg,
 	iwr.u.encoding.length = key_len;
 
 	if (ioctl(drv->ioctl_sock, SIOCSIWENCODE, &iwr) < 0) {
-		wpa_printf(MSG_ERROR, "ioctl[SIOCSIWENCODE]");
+		perror("ioctl[SIOCSIWENCODE]");
 		ret = -1;
 	}
 
@@ -2009,7 +2107,7 @@ int wpa_driver_wext_set_key(void *priv, wpa_alg alg,
 		iwr.u.encoding.pointer = (caddr_t) NULL;
 		iwr.u.encoding.length = 0;
 		if (ioctl(drv->ioctl_sock, SIOCSIWENCODE, &iwr) < 0) {
-			wpa_printf(MSG_ERROR, "ioctl[SIOCSIWENCODE] (set_tx)");
+			perror("ioctl[SIOCSIWENCODE] (set_tx)");
 			ret = -1;
 		}
 	}
@@ -2018,29 +2116,29 @@ int wpa_driver_wext_set_key(void *priv, wpa_alg alg,
 }
 
 
-static int wpa_driver_wext_set_countermeasures(void *priv,
+static int wpa_driver_ar6000_set_countermeasures(void *priv,
 					       int enabled)
 {
-	struct wpa_driver_wext_data *drv = priv;
+	struct wpa_driver_ar6000_data *drv = priv;
 	wpa_printf(MSG_DEBUG, "%s", __FUNCTION__);
-	return wpa_driver_wext_set_auth_param(drv,
+	return wpa_driver_ar6000_set_auth_param(drv,
 					      IW_AUTH_TKIP_COUNTERMEASURES,
 					      enabled);
 }
 
 
-static int wpa_driver_wext_set_drop_unencrypted(void *priv,
+static int wpa_driver_ar6000_set_drop_unencrypted(void *priv,
 						int enabled)
 {
-	struct wpa_driver_wext_data *drv = priv;
+	struct wpa_driver_ar6000_data *drv = priv;
 	wpa_printf(MSG_DEBUG, "%s", __FUNCTION__);
 	drv->use_crypt = enabled;
-	return wpa_driver_wext_set_auth_param(drv, IW_AUTH_DROP_UNENCRYPTED,
+	return wpa_driver_ar6000_set_auth_param(drv, IW_AUTH_DROP_UNENCRYPTED,
 					      enabled);
 }
 
 
-static int wpa_driver_wext_mlme(struct wpa_driver_wext_data *drv,
+static int wpa_driver_ar6000_mlme(struct wpa_driver_ar6000_data *drv,
 				const u8 *addr, int cmd, int reason_code)
 {
 	struct iwreq iwr;
@@ -2058,7 +2156,7 @@ static int wpa_driver_wext_mlme(struct wpa_driver_wext_data *drv,
 	iwr.u.data.length = sizeof(mlme);
 
 	if (ioctl(drv->ioctl_sock, SIOCSIWMLME, &iwr) < 0) {
-		wpa_printf(MSG_ERROR, "ioctl[SIOCSIWMLME]");
+		perror("ioctl[SIOCSIWMLME]");
 		ret = -1;
 	}
 
@@ -2066,7 +2164,7 @@ static int wpa_driver_wext_mlme(struct wpa_driver_wext_data *drv,
 }
 
 
-static void wpa_driver_wext_disconnect(struct wpa_driver_wext_data *drv)
+static void wpa_driver_ar6000_disconnect(struct wpa_driver_ar6000_data *drv)
 {
 	struct iwreq iwr;
 	const u8 null_bssid[ETH_ALEN] = { 0, 0, 0, 0, 0, 0 };
@@ -2083,55 +2181,63 @@ static void wpa_driver_wext_disconnect(struct wpa_driver_wext_data *drv)
 	os_memset(&iwr, 0, sizeof(iwr));
 	os_strlcpy(iwr.ifr_name, drv->ifname, IFNAMSIZ);
 	if (ioctl(drv->ioctl_sock, SIOCGIWMODE, &iwr) < 0) {
-		wpa_printf(MSG_ERROR, "ioctl[SIOCGIWMODE]");
+		perror("ioctl[SIOCGIWMODE]");
 		iwr.u.mode = IW_MODE_INFRA;
 	}
 
 	if (iwr.u.mode == IW_MODE_INFRA) {
+        u8 off_ssid[32] = { 0 };
 		/*
 		 * Clear the BSSID selection and set a random SSID to make sure
 		 * the driver will not be trying to associate with something
 		 * even if it does not understand SIOCSIWMLME commands (or
 		 * tries to associate automatically after deauth/disassoc).
 		 */
-		wpa_driver_wext_set_bssid(drv, null_bssid);
+		wpa_driver_ar6000_set_ssid(drv, off_ssid, 0);
 #ifndef ANDROID
 		for (i = 0; i < 32; i++)
 			ssid[i] = rand() & 0xFF;
-		wpa_driver_wext_set_ssid(drv, ssid, 32);
+		wpa_driver_ar6000_set_ssid(drv, ssid, 32);
 #endif
 	}
 }
 
 
-static int wpa_driver_wext_deauthenticate(void *priv, const u8 *addr,
+static int wpa_driver_ar6000_deauthenticate(void *priv, const u8 *addr,
 					  int reason_code)
 {
-	struct wpa_driver_wext_data *drv = priv;
-	int ret;
+	struct wpa_driver_ar6000_data *drv = priv;
 	wpa_printf(MSG_DEBUG, "%s", __FUNCTION__);
-	ret = wpa_driver_wext_mlme(drv, addr, IW_MLME_DEAUTH, reason_code);
-	wpa_driver_wext_disconnect(drv);
-	return ret;
+	return wpa_driver_ar6000_mlme(drv, addr, IW_MLME_DEAUTH, reason_code);
 }
 
+#ifdef CONFIG_WAPI
+static int wpa_driver_ar6000_set_gen_ie(void *priv, const u8 *ie,
+				      size_t ie_len);
+#endif
 
-static int wpa_driver_wext_disassociate(void *priv, const u8 *addr,
+static int wpa_driver_ar6000_disassociate(void *priv, const u8 *addr,
 					int reason_code)
 {
-	struct wpa_driver_wext_data *drv = priv;
-	int ret;
+	struct wpa_driver_ar6000_data *drv = priv;
+#ifdef CONFIG_WAPI
+        int temp = 0;
+#endif
+
 	wpa_printf(MSG_DEBUG, "%s", __FUNCTION__);
-	ret = wpa_driver_wext_mlme(drv, addr, IW_MLME_DISASSOC, reason_code);
-	wpa_driver_wext_disconnect(drv);
-	return ret;
+#ifdef CONFIG_WAPI
+        /* Clear APP IE */
+        wpa_driver_ar6000_set_gen_ie(drv, (const u8 *)&temp, 0);
+#endif
+	return wpa_driver_ar6000_mlme(drv, addr, IW_MLME_DISASSOC,
+				    reason_code);
 }
 
 
-static int wpa_driver_wext_set_gen_ie(void *priv, const u8 *ie,
+static int wpa_driver_ar6000_set_gen_ie(void *priv, const u8 *ie,
 				      size_t ie_len)
 {
-	struct wpa_driver_wext_data *drv = priv;
+	struct wpa_driver_ar6000_data *drv = priv;
 	struct iwreq iwr;
 	int ret = 0;
 
@@ -2141,7 +2247,7 @@ static int wpa_driver_wext_set_gen_ie(void *priv, const u8 *ie,
 	iwr.u.data.length = ie_len;
 
 	if (ioctl(drv->ioctl_sock, SIOCSIWGENIE, &iwr) < 0) {
-		wpa_printf(MSG_ERROR, "ioctl[SIOCSIWGENIE]");
+		perror("ioctl[SIOCSIWGENIE]");
 		ret = -1;
 	}
 
@@ -2149,7 +2255,7 @@ static int wpa_driver_wext_set_gen_ie(void *priv, const u8 *ie,
 }
 
 
-int wpa_driver_wext_cipher2wext(int cipher)
+int wpa_driver_ar6000_cipher2wext(int cipher)
 {
 	switch (cipher) {
 	case CIPHER_NONE:
@@ -2162,13 +2268,17 @@ int wpa_driver_wext_cipher2wext(int cipher)
 		return IW_AUTH_CIPHER_CCMP;
 	case CIPHER_WEP104:
 		return IW_AUTH_CIPHER_WEP104;
+#ifdef CONFIG_WAPI
+	case CIPHER_SMS4:
+		return IW_AUTH_CIPHER_SMS4;
+#endif
 	default:
 		return 0;
 	}
 }
 
 
-int wpa_driver_wext_keymgmt2wext(int keymgmt)
+int wpa_driver_ar6000_keymgmt2wext(int keymgmt)
 {
 	switch (keymgmt) {
 	case KEY_MGMT_802_1X:
@@ -2183,7 +2293,7 @@ int wpa_driver_wext_keymgmt2wext(int keymgmt)
 
 
 static int
-wpa_driver_wext_auth_alg_fallback(struct wpa_driver_wext_data *drv,
+wpa_driver_ar6000_auth_alg_fallback(struct wpa_driver_ar6000_data *drv,
 				  struct wpa_driver_associate_params *params)
 {
 	struct iwreq iwr;
@@ -2218,7 +2328,7 @@ wpa_driver_wext_auth_alg_fallback(struct wpa_driver_wext_data *drv,
 	}
 
 	if (ioctl(drv->ioctl_sock, SIOCSIWENCODE, &iwr) < 0) {
-		wpa_printf(MSG_ERROR, "ioctl[SIOCSIWENCODE]");
+		perror("ioctl[SIOCSIWENCODE]");
 		ret = -1;
 	}
 
@@ -2226,118 +2336,130 @@ wpa_driver_wext_auth_alg_fallback(struct wpa_driver_wext_data *drv,
 }
 
 
-int wpa_driver_wext_associate(void *priv,
+int wpa_driver_ar6000_associate(void *priv,
 			      struct wpa_driver_associate_params *params)
 {
-	struct wpa_driver_wext_data *drv = priv;
+	struct wpa_driver_ar6000_data *drv = priv;
 	int ret = 0;
 	int allow_unencrypted_eapol;
-	int value, flags;
+	int value;
 
 	wpa_printf(MSG_DEBUG, "%s", __FUNCTION__);
 
-#ifdef ANDROID
 	drv->skip_disconnect = 0;
-#endif
 
-	if (wpa_driver_wext_get_ifflags(drv, &flags) == 0) {
-		if (!(flags & IFF_UP)) {
-			wpa_driver_wext_set_ifflags(drv, flags | IFF_UP);
+	do {
+
+		struct ifreq ifr;
+		os_memset(&ifr, 0, sizeof(ifr));
+		os_strncpy(ifr.ifr_name, drv->ifname, IFNAMSIZ);
+		if(ioctl(drv->ioctl_sock, SIOCGIFFLAGS, &ifr)==0 && !(ifr.ifr_flags & IFF_UP)) {
+			/* reset the interface in order to received eapol */
+			ifr.ifr_flags |= IFF_UP;
+			ioctl(drv->ioctl_sock, SIOCSIFFLAGS, &ifr);
 		}
-	}
+		/*
+		 * If the driver did not support SIOCSIWAUTH, fallback to
+		 * SIOCSIWENCODE here.
+		 */
+		if (drv->auth_alg_fallback &&
+			(ret=wpa_driver_ar6000_auth_alg_fallback(drv, params)) < 0)
+			break;
 
-	/*
-	 * If the driver did not support SIOCSIWAUTH, fallback to
-	 * SIOCSIWENCODE here.
-	 */
-	if (drv->auth_alg_fallback &&
-	    wpa_driver_wext_auth_alg_fallback(drv, params) < 0)
-		ret = -1;
+		if (!params->bssid &&
+			(ret=wpa_driver_ar6000_set_bssid(drv, NULL)) < 0)
+			break;
 
-	if (!params->bssid &&
-	    wpa_driver_wext_set_bssid(drv, NULL) < 0)
-		ret = -1;
+		/* TODO: should consider getting wpa version and cipher/key_mgmt suites
+		 * from configuration, not from here, where only the selected suite is
+		 * available */
+		if ((ret=wpa_driver_ar6000_set_gen_ie(drv, params->wpa_ie, params->wpa_ie_len))
+			< 0)
+			break;
 
-	/* TODO: should consider getting wpa version and cipher/key_mgmt suites
-	 * from configuration, not from here, where only the selected suite is
-	 * available */
-	if (wpa_driver_wext_set_gen_ie(drv, params->wpa_ie, params->wpa_ie_len)
-	    < 0)
-		ret = -1;
-	if (params->wpa_ie == NULL || params->wpa_ie_len == 0)
-		value = IW_AUTH_WPA_VERSION_DISABLED;
-	else if (params->wpa_ie[0] == WLAN_EID_RSN)
-		value = IW_AUTH_WPA_VERSION_WPA2;
-	else
-		value = IW_AUTH_WPA_VERSION_WPA;
-	if (wpa_driver_wext_set_auth_param(drv,
-					   IW_AUTH_WPA_VERSION, value) < 0)
-		ret = -1;
-	value = wpa_driver_wext_cipher2wext(params->pairwise_suite);
-	if (wpa_driver_wext_set_auth_param(drv,
-					   IW_AUTH_CIPHER_PAIRWISE, value) < 0)
-		ret = -1;
-	value = wpa_driver_wext_cipher2wext(params->group_suite);
-	if (wpa_driver_wext_set_auth_param(drv,
-					   IW_AUTH_CIPHER_GROUP, value) < 0)
-		ret = -1;
-	value = wpa_driver_wext_keymgmt2wext(params->key_mgmt_suite);
-	if (wpa_driver_wext_set_auth_param(drv,
-					   IW_AUTH_KEY_MGMT, value) < 0)
-		ret = -1;
-	value = params->key_mgmt_suite != KEY_MGMT_NONE ||
-		params->pairwise_suite != CIPHER_NONE ||
-		params->group_suite != CIPHER_NONE ||
-		params->wpa_ie_len;
-	if (wpa_driver_wext_set_auth_param(drv,
-					   IW_AUTH_PRIVACY_INVOKED, value) < 0)
-		ret = -1;
+		if (params->wpa_ie == NULL || params->wpa_ie_len == 0)
+			value = IW_AUTH_WPA_VERSION_DISABLED;
+		else if (params->wpa_ie[0] == WLAN_EID_RSN)
+			value = IW_AUTH_WPA_VERSION_WPA2;
+		else if (RSN_SELECTOR_GET(&params->wpa_ie[2]) == WPA_OUI_TYPE)
+			value = IW_AUTH_WPA_VERSION_WPA;
+		else
+			value = IW_AUTH_WPA_VERSION_DISABLED;
 
-	/* Allow unencrypted EAPOL messages even if pairwise keys are set when
-	 * not using WPA. IEEE 802.1X specifies that these frames are not
-	 * encrypted, but WPA encrypts them when pairwise keys are in use. */
-	if (params->key_mgmt_suite == KEY_MGMT_802_1X ||
-	    params->key_mgmt_suite == KEY_MGMT_PSK)
-		allow_unencrypted_eapol = 0;
-	else
-		allow_unencrypted_eapol = 1;
+		if ((ret=wpa_driver_ar6000_set_auth_param(drv,
+                                IW_AUTH_WPA_VERSION, value)) < 0)
+			break;
+#ifdef CONFIG_WAPI
+		if (params->pairwise_suite!=CIPHER_SMS4 && params->group_suite!=CIPHER_SMS4)
+#endif
+		{
+			value = wpa_driver_ar6000_cipher2wext(params->pairwise_suite);
+			if ((ret=wpa_driver_ar6000_set_auth_param(drv,
+							   IW_AUTH_CIPHER_PAIRWISE, value)) < 0)
+				break;
+			value = wpa_driver_ar6000_cipher2wext(params->group_suite);
+			if ((ret=wpa_driver_ar6000_set_auth_param(drv,
+							   IW_AUTH_CIPHER_GROUP, value)) < 0)
+				break;
+		}
+		value = wpa_driver_ar6000_keymgmt2wext(params->key_mgmt_suite);
+		if ((ret=wpa_driver_ar6000_set_auth_param(drv,
+						   IW_AUTH_KEY_MGMT, value)) < 0)
+			break;
+		value = params->key_mgmt_suite != KEY_MGMT_NONE ||
+			params->pairwise_suite != CIPHER_NONE ||
+			params->group_suite != CIPHER_NONE ||
+			params->wpa_ie_len;
+		if ((ret=wpa_driver_ar6000_set_auth_param(drv,
+						   IW_AUTH_PRIVACY_INVOKED, value)) < 0)
+			break;
 
-	if (wpa_driver_wext_set_psk(drv, params->psk) < 0)
-		ret = -1;
-	if (wpa_driver_wext_set_auth_param(drv,
-					   IW_AUTH_RX_UNENCRYPTED_EAPOL,
-					   allow_unencrypted_eapol) < 0)
-		ret = -1;
+		/* Allow unencrypted EAPOL messages even if pairwise keys are set when
+		 * not using WPA. IEEE 802.1X specifies that these frames are not
+		 * encrypted, but WPA encrypts them when pairwise keys are in use. */
+		if (params->key_mgmt_suite == KEY_MGMT_802_1X ||
+			params->key_mgmt_suite == KEY_MGMT_PSK)
+			allow_unencrypted_eapol = 0;
+		else
+			allow_unencrypted_eapol = 1;
+
+		if ((ret=wpa_driver_ar6000_set_psk(drv, params->psk)) < 0)
+			break;
+		if ((ret=wpa_driver_ar6000_set_auth_param(drv,
+						   IW_AUTH_RX_UNENCRYPTED_EAPOL,
+						   allow_unencrypted_eapol)) < 0)
+			break;
 #ifdef CONFIG_IEEE80211W
-	switch (params->mgmt_frame_protection) {
-	case NO_MGMT_FRAME_PROTECTION:
-		value = IW_AUTH_MFP_DISABLED;
-		break;
-	case MGMT_FRAME_PROTECTION_OPTIONAL:
-		value = IW_AUTH_MFP_OPTIONAL;
-		break;
-	case MGMT_FRAME_PROTECTION_REQUIRED:
-		value = IW_AUTH_MFP_REQUIRED;
-		break;
-	};
-	if (wpa_driver_wext_set_auth_param(drv, IW_AUTH_MFP, value) < 0)
-		ret = -1;
+		switch (params->mgmt_frame_protection) {
+		case NO_MGMT_FRAME_PROTECTION:
+			value = IW_AUTH_MFP_DISABLED;
+			break;
+		case MGMT_FRAME_PROTECTION_OPTIONAL:
+			value = IW_AUTH_MFP_OPTIONAL;
+			break;
+		case MGMT_FRAME_PROTECTION_REQUIRED:
+			value = IW_AUTH_MFP_REQUIRED;
+			break;
+		};
+		if ((ret=wpa_driver_ar6000_set_auth_param(drv, IW_AUTH_MFP, value)) < 0)
+			break;
 #endif /* CONFIG_IEEE80211W */
-	if (params->freq && wpa_driver_wext_set_freq(drv, params->freq) < 0)
-		ret = -1;
-	if (wpa_driver_wext_set_ssid(drv, params->ssid, params->ssid_len) < 0)
-		ret = -1;
-	if (params->bssid &&
-	    wpa_driver_wext_set_bssid(drv, params->bssid) < 0)
-		ret = -1;
+		if (params->freq && (ret=wpa_driver_ar6000_set_freq(drv, params->freq)) < 0)
+			break;
+		if ((ret=wpa_driver_ar6000_set_ssid(drv, params->ssid, params->ssid_len)) < 0)
+			break;
+		if (params->bssid &&
+			(ret=wpa_driver_ar6000_set_bssid(drv, params->bssid)) < 0)
+			break;
+	} while (0);
 
 	return ret;
 }
 
 
-static int wpa_driver_wext_set_auth_alg(void *priv, int auth_alg)
+static int wpa_driver_ar6000_set_auth_alg(void *priv, int auth_alg)
 {
-	struct wpa_driver_wext_data *drv = priv;
+	struct wpa_driver_ar6000_data *drv = priv;
 	int algs = 0, res;
 
 	if (auth_alg & AUTH_ALG_OPEN_SYSTEM)
@@ -2351,7 +2473,7 @@ static int wpa_driver_wext_set_auth_alg(void *priv, int auth_alg)
 		algs = IW_AUTH_ALG_OPEN_SYSTEM;
 	}
 
-	res = wpa_driver_wext_set_auth_param(drv, IW_AUTH_80211_AUTH_ALG,
+	res = wpa_driver_ar6000_set_auth_param(drv, IW_AUTH_80211_AUTH_ALG,
 					     algs);
 	drv->auth_alg_fallback = res == -2;
 	return res;
@@ -2359,14 +2481,14 @@ static int wpa_driver_wext_set_auth_alg(void *priv, int auth_alg)
 
 
 /**
- * wpa_driver_wext_set_mode - Set wireless mode (infra/adhoc), SIOCSIWMODE
- * @priv: Pointer to private wext data from wpa_driver_wext_init()
+ * wpa_driver_ar6000_set_mode - Set wireless mode (infra/adhoc), SIOCSIWMODE
+ * @priv: Pointer to private wext data from wpa_driver_ar6000_init()
  * @mode: 0 = infra/BSS (associate with an AP), 1 = adhoc/IBSS
  * Returns: 0 on success, -1 on failure
  */
-int wpa_driver_wext_set_mode(void *priv, int mode)
+int wpa_driver_ar6000_set_mode(void *priv, int mode)
 {
-	struct wpa_driver_wext_data *drv = priv;
+	struct wpa_driver_ar6000_data *drv = priv;
 	struct iwreq iwr;
 	int ret = -1, flags;
 	unsigned int new_mode = mode ? IW_MODE_ADHOC : IW_MODE_INFRA;
@@ -2380,7 +2502,7 @@ int wpa_driver_wext_set_mode(void *priv, int mode)
 	}
 
 	if (errno != EBUSY) {
-		wpa_printf(MSG_ERROR, "ioctl[SIOCSIWMODE]");
+		perror("ioctl[SIOCSIWMODE]");
 		goto done;
 	}
 
@@ -2389,7 +2511,7 @@ int wpa_driver_wext_set_mode(void *priv, int mode)
 	 * down, try to set the mode again, and bring it back up.
 	 */
 	if (ioctl(drv->ioctl_sock, SIOCGIWMODE, &iwr) < 0) {
-		wpa_printf(MSG_ERROR, "ioctl[SIOCGIWMODE]");
+		perror("ioctl[SIOCGIWMODE]");
 		goto done;
 	}
 
@@ -2398,21 +2520,21 @@ int wpa_driver_wext_set_mode(void *priv, int mode)
 		goto done;
 	}
 
-	if (wpa_driver_wext_get_ifflags(drv, &flags) == 0) {
-		(void) wpa_driver_wext_set_ifflags(drv, flags & ~IFF_UP);
+	if (wpa_driver_ar6000_get_ifflags(drv, &flags) == 0) {
+		(void) wpa_driver_ar6000_set_ifflags(drv, flags & ~IFF_UP);
 
 		/* Try to set the mode again while the interface is down */
 		iwr.u.mode = new_mode;
 		if (ioctl(drv->ioctl_sock, SIOCSIWMODE, &iwr) < 0)
-			wpa_printf(MSG_ERROR, "ioctl[SIOCSIWMODE]");
+			perror("ioctl[SIOCSIWMODE]");
 		else
 			ret = 0;
 
 		/* Ignore return value of get_ifflags to ensure that the device
 		 * is always up like it was before this function was called.
 		 */
-		(void) wpa_driver_wext_get_ifflags(drv, &flags);
-		(void) wpa_driver_wext_set_ifflags(drv, flags | IFF_UP);
+		(void) wpa_driver_ar6000_get_ifflags(drv, &flags);
+		(void) wpa_driver_ar6000_set_ifflags(drv, flags | IFF_UP);
 	}
 
 done:
@@ -2420,7 +2542,7 @@ done:
 }
 
 
-static int wpa_driver_wext_pmksa(struct wpa_driver_wext_data *drv,
+static int wpa_driver_ar6000_pmksa(struct wpa_driver_ar6000_data *drv,
 				 u32 cmd, const u8 *bssid, const u8 *pmkid)
 {
 	struct iwreq iwr;
@@ -2441,7 +2563,7 @@ static int wpa_driver_wext_pmksa(struct wpa_driver_wext_data *drv,
 
 	if (ioctl(drv->ioctl_sock, SIOCSIWPMKSA, &iwr) < 0) {
 		if (errno != EOPNOTSUPP)
-			wpa_printf(MSG_ERROR, "ioctl[SIOCSIWPMKSA]");
+			perror("ioctl[SIOCSIWPMKSA]");
 		ret = -1;
 	}
 
@@ -2449,32 +2571,32 @@ static int wpa_driver_wext_pmksa(struct wpa_driver_wext_data *drv,
 }
 
 
-static int wpa_driver_wext_add_pmkid(void *priv, const u8 *bssid,
+static int wpa_driver_ar6000_add_pmkid(void *priv, const u8 *bssid,
 				     const u8 *pmkid)
 {
-	struct wpa_driver_wext_data *drv = priv;
-	return wpa_driver_wext_pmksa(drv, IW_PMKSA_ADD, bssid, pmkid);
+	struct wpa_driver_ar6000_data *drv = priv;
+	return wpa_driver_ar6000_pmksa(drv, IW_PMKSA_ADD, bssid, pmkid);
 }
 
 
-static int wpa_driver_wext_remove_pmkid(void *priv, const u8 *bssid,
+static int wpa_driver_ar6000_remove_pmkid(void *priv, const u8 *bssid,
 		 			const u8 *pmkid)
 {
-	struct wpa_driver_wext_data *drv = priv;
-	return wpa_driver_wext_pmksa(drv, IW_PMKSA_REMOVE, bssid, pmkid);
+	struct wpa_driver_ar6000_data *drv = priv;
+	return wpa_driver_ar6000_pmksa(drv, IW_PMKSA_REMOVE, bssid, pmkid);
 }
 
 
-static int wpa_driver_wext_flush_pmkid(void *priv)
+static int wpa_driver_ar6000_flush_pmkid(void *priv)
 {
-	struct wpa_driver_wext_data *drv = priv;
-	return wpa_driver_wext_pmksa(drv, IW_PMKSA_FLUSH, NULL, NULL);
+	struct wpa_driver_ar6000_data *drv = priv;
+	return wpa_driver_ar6000_pmksa(drv, IW_PMKSA_FLUSH, NULL, NULL);
 }
 
 
-int wpa_driver_wext_get_capa(void *priv, struct wpa_driver_capa *capa)
+int wpa_driver_ar6000_get_capa(void *priv, struct wpa_driver_capa *capa)
 {
-	struct wpa_driver_wext_data *drv = priv;
+	struct wpa_driver_ar6000_data *drv = priv;
 	if (!drv->has_capability)
 		return -1;
 	os_memcpy(capa, &drv->capa, sizeof(*capa));
@@ -2482,7 +2604,7 @@ int wpa_driver_wext_get_capa(void *priv, struct wpa_driver_capa *capa)
 }
 
 
-int wpa_driver_wext_alternative_ifindex(struct wpa_driver_wext_data *drv,
+int wpa_driver_ar6000_alternative_ifindex(struct wpa_driver_ar6000_data *drv,
 					const char *ifname)
 {
 	if (ifname == NULL) {
@@ -2501,85 +2623,22 @@ int wpa_driver_wext_alternative_ifindex(struct wpa_driver_wext_data *drv,
 }
 
 
-int wpa_driver_wext_set_operstate(void *priv, int state)
+int wpa_driver_ar6000_set_operstate(void *priv, int state)
 {
-	struct wpa_driver_wext_data *drv = priv;
+	struct wpa_driver_ar6000_data *drv = priv;
 
 	wpa_printf(MSG_DEBUG, "%s: operstate %d->%d (%s)",
 		   __func__, drv->operstate, state, state ? "UP" : "DORMANT");
 	drv->operstate = state;
-	return wpa_driver_wext_send_oper_ifla(
+	return wpa_driver_ar6000_send_oper_ifla(
 		drv, -1, state ? IF_OPER_UP : IF_OPER_DORMANT);
 }
 
 
-int wpa_driver_wext_get_version(struct wpa_driver_wext_data *drv)
+int wpa_driver_ar6000_get_version(struct wpa_driver_ar6000_data *drv)
 {
 	return drv->we_version_compiled;
 }
-
-
-#ifdef ANDROID
-static int wpa_driver_wext_set_cscan_params(char *buf, size_t buf_len, char *cmd)
-{
-	char *pasv_ptr;
-	int bp, i;
-	u16 pasv_dwell = WEXT_CSCAN_PASV_DWELL_TIME_DEF;
-	u8 channel;
-
-	wpa_printf(MSG_DEBUG, "%s: %s", __func__, cmd);
-
-	/* Get command parameters */
-	pasv_ptr = os_strstr(cmd, ",TIME=");
-	if (pasv_ptr) {
-		*pasv_ptr = '\0';
-		pasv_ptr += 6;
-		pasv_dwell = (u16)atoi(pasv_ptr);
-		if (pasv_dwell == 0)
-			pasv_dwell = WEXT_CSCAN_PASV_DWELL_TIME_DEF;
-	}
-	channel = (u8)atoi(cmd + 5);
-
-	bp = WEXT_CSCAN_HEADER_SIZE;
-	os_memcpy(buf, WEXT_CSCAN_HEADER, bp);
-
-	/* Set list of channels */
-	buf[bp++] = WEXT_CSCAN_CHANNEL_SECTION;
-	buf[bp++] = channel;
-	if (channel != 0) {
-		i = (pasv_dwell - 1) / WEXT_CSCAN_PASV_DWELL_TIME_DEF;
-		for (; i > 0; i--) {
-			if ((size_t)(bp + 12) >= buf_len)
-				break;
-			buf[bp++] = WEXT_CSCAN_CHANNEL_SECTION;
-			buf[bp++] = channel;
-		}
-	} else {
-		if (pasv_dwell > WEXT_CSCAN_PASV_DWELL_TIME_MAX)
-			pasv_dwell = WEXT_CSCAN_PASV_DWELL_TIME_MAX;
-	}
-
-	/* Set passive dwell time (default is 250) */
-	buf[bp++] = WEXT_CSCAN_PASV_DWELL_SECTION;
-	if (channel != 0) {
-		buf[bp++] = (u8)WEXT_CSCAN_PASV_DWELL_TIME_DEF;
-		buf[bp++] = (u8)(WEXT_CSCAN_PASV_DWELL_TIME_DEF >> 8);
-	} else {
-		buf[bp++] = (u8)pasv_dwell;
-		buf[bp++] = (u8)(pasv_dwell >> 8);
-	}
-
-	/* Set home dwell time (default is 40) */
-	buf[bp++] = WEXT_CSCAN_HOME_DWELL_SECTION;
-	buf[bp++] = (u8)WEXT_CSCAN_HOME_DWELL_TIME;
-	buf[bp++] = (u8)(WEXT_CSCAN_HOME_DWELL_TIME >> 8);
-
-	/* Set cscan type */
-	buf[bp++] = WEXT_CSCAN_TYPE_SECTION;
-	buf[bp++] = WEXT_CSCAN_TYPE_PASSIVE;
-	return bp;
-}
-
 static char *wpa_driver_get_country_code(int channels)
 {
 	char *country = "US"; /* WEXT_NUMBER_SCAN_CHANNELS_FCC */
@@ -2591,206 +2650,199 @@ static char *wpa_driver_get_country_code(int channels)
 	return country;
 }
 
-static int wpa_driver_set_backgroundscan_params(void *priv)
+#ifdef ANDROID
+
+/**
+     * driver_cmd - execute driver-specific command
+     * @priv: private driver interface data from init()
+     * @cmd: command to execute
+     * @buf: return buffer
+     * @buf_len: buffer length
+	 *
+     * Returns: 0 for "OK" reply, >0 for reply_len on success,
+     * -1 on failure
+	 *
+	 */
+int wpa_driver_ar6000_driver_cmd(void *priv, char *cmd, char *buf, size_t buf_len)
 {
-	struct wpa_driver_wext_data *drv = priv;
-	struct wpa_supplicant *wpa_s;
-	struct iwreq iwr;
-	int ret = 0, i = 0, bp;
-	char buf[WEXT_PNO_MAX_COMMAND_SIZE];
-	struct wpa_ssid *ssid_conf;
+	struct wpa_driver_ar6000_data *drv = priv;
 
-	if (drv == NULL){
-		wpa_printf(MSG_ERROR, "%s: drv is NULL. Exiting", __func__);
-		return -1;
+	if (drv->host_asleep) {
+		return 0; /* just return due to system suspend */
 	}
-	if (drv->ctx == NULL){
-		wpa_printf(MSG_ERROR, "%s: drv->ctx is NULL. Exiting", __func__);
-		return -1;
-	}
-	wpa_s = (struct wpa_supplicant *)(drv->ctx);
-	if (wpa_s->conf == NULL) {
-		wpa_printf(MSG_ERROR, "%s: wpa_s->conf is NULL. Exiting", __func__);
-		return -1;
-	}
-	ssid_conf = wpa_s->conf->ssid;
 
-	bp = WEXT_PNOSETUP_HEADER_SIZE;
-	os_memcpy(buf, WEXT_PNOSETUP_HEADER, bp);
-	buf[bp++] = 'S';
-	buf[bp++] = WEXT_PNO_TLV_VERSION;
-	buf[bp++] = WEXT_PNO_TLV_SUBVERSION;
-	buf[bp++] = WEXT_PNO_TLV_RESERVED;
-
-	while ((i < WEXT_PNO_AMOUNT) && (ssid_conf != NULL)) {
-		/* Check that there is enough space needed for 1 more SSID, the other sections and null termination */
-		if ((bp + WEXT_PNO_SSID_HEADER_SIZE + IW_ESSID_MAX_SIZE + WEXT_PNO_NONSSID_SECTIONS_SIZE + 1) >= (int)sizeof(buf))
-			break;
-		if ((!ssid_conf->disabled) && (ssid_conf->ssid_len <= IW_ESSID_MAX_SIZE)){
-			wpa_printf(MSG_DEBUG, "For PNO Scan: %s", ssid_conf->ssid);
-			buf[bp++] = WEXT_PNO_SSID_SECTION;
-			buf[bp++] = ssid_conf->ssid_len;
-			os_memcpy(&buf[bp], ssid_conf->ssid, ssid_conf->ssid_len);
-			bp += ssid_conf->ssid_len;
-			i++;
+	if (os_strcmp(cmd, "RSSI")==0 || os_strcasecmp(cmd, "RSSI-APPROX") == 0) {
+		int rssi = 255;
+		struct iwreq iwr;
+		struct iw_statistics stats;
+		os_memset(&iwr, 0, sizeof(iwr));
+		os_memset(&stats, 0, sizeof(stats));
+		os_strncpy(iwr.ifr_name, drv->ifname, IFNAMSIZ);
+		iwr.u.data.pointer = (caddr_t) &stats;
+		iwr.u.data.length = sizeof(struct iw_statistics);
+		iwr.u.data.flags = 1;             /* Clear updated flag */
+		if (ioctl(drv->ioctl_sock, SIOCGIWSTATS, &iwr) >= 0) {
+			rssi = stats.qual.qual;
 		}
-		ssid_conf = ssid_conf->next;
-	}
-
-	buf[bp++] = WEXT_PNO_SCAN_INTERVAL_SECTION;
-	os_snprintf(&buf[bp], WEXT_PNO_SCAN_INTERVAL_LENGTH + 1, "%x", WEXT_PNO_SCAN_INTERVAL);
-	bp += WEXT_PNO_SCAN_INTERVAL_LENGTH;
-
-	buf[bp++] = WEXT_PNO_REPEAT_SECTION;
-	os_snprintf(&buf[bp], WEXT_PNO_REPEAT_LENGTH + 1, "%x", WEXT_PNO_REPEAT);
-	bp += WEXT_PNO_REPEAT_LENGTH;
-
-	buf[bp++] = WEXT_PNO_MAX_REPEAT_SECTION;
-	os_snprintf(&buf[bp], WEXT_PNO_MAX_REPEAT_LENGTH + 1, "%x", WEXT_PNO_MAX_REPEAT);
-	bp += WEXT_PNO_MAX_REPEAT_LENGTH + 1;
-
-	os_memset(&iwr, 0, sizeof(iwr));
-	os_strncpy(iwr.ifr_name, drv->ifname, IFNAMSIZ);
-	iwr.u.data.pointer = buf;
-	iwr.u.data.length = bp;
-
-	ret = ioctl(drv->ioctl_sock, SIOCSIWPRIV, &iwr);
-
-	if (ret < 0) {
-		wpa_printf(MSG_ERROR, "ioctl[SIOCSIWPRIV] (pnosetup): %d", ret);
-		drv->errors++;
-		if (drv->errors > WEXT_NUMBER_SEQUENTIAL_ERRORS) {
-			drv->errors = 0;
-			wpa_msg(drv->ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "HANGED");
+		if (rssi == 255)
+			rssi = -200;
+		else
+			rssi += (161 - 256);
+		return os_snprintf(buf, buf_len, "SSID rssi %d\n", rssi);
+	} else if (os_strcmp(cmd, "LINKSPEED")==0) {
+		struct iwreq iwr;
+		os_memset(&iwr, 0, sizeof(iwr));
+		os_strncpy(iwr.ifr_name, drv->ifname, IFNAMSIZ);
+		if (ioctl(drv->ioctl_sock, SIOCGIWRATE, &iwr) == 0) {
+			unsigned int speed_kbps = iwr.u.param.value / 1000000;
+			if ((!iwr.u.param.fixed)) {
+				return os_snprintf(buf, buf_len, "LinkSpeed %u\n", speed_kbps);
+			}
 		}
-	} else {
-		drv->errors = 0;
-	}
-	return ret;
-
-}
-
-static int wpa_driver_priv_driver_cmd( void *priv, char *cmd, char *buf, size_t buf_len )
-{
-	struct wpa_driver_wext_data *drv = priv;
-	struct wpa_supplicant *wpa_s = (struct wpa_supplicant *)(drv->ctx);
-	struct iwreq iwr;
-	int ret = 0, flags;
-
-	wpa_printf(MSG_DEBUG, "%s %s len = %d", __func__, cmd, buf_len);
-
-	if (!drv->driver_is_started && (os_strcasecmp(cmd, "START") != 0)) {
-		wpa_printf(MSG_ERROR,"WEXT: Driver not initialized yet");
 		return -1;
-	}
-
-	if (os_strcasecmp(cmd, "RSSI-APPROX") == 0) {
-		os_strncpy(cmd, "RSSI", MAX_DRV_CMD_SIZE);
-	} else if( os_strncasecmp(cmd, "SCAN-CHANNELS", 13) == 0 ) {
-		int no_of_chan;
-
-		no_of_chan = atoi(cmd + 13);
-		os_snprintf(cmd, MAX_DRV_CMD_SIZE, "COUNTRY %s",
-			wpa_driver_get_country_code(no_of_chan));
-	} else if (os_strcasecmp(cmd, "STOP") == 0) {
-		if ((wpa_driver_wext_get_ifflags(drv, &flags) == 0) &&
-		    (flags & IFF_UP)) {
-			wpa_printf(MSG_ERROR, "WEXT: %s when iface is UP", cmd);
-			wpa_driver_wext_set_ifflags(drv, flags & ~IFF_UP);
+	} else if (os_strcmp(cmd, "MACADDR")==0) {
+		// reply comes back in the form "Macaddr = XX.XX.XX.XX.XX.XX" where XX
+		struct ifreq ifr;
+		os_memset(&ifr, 0, sizeof(ifr));
+		os_strncpy(ifr.ifr_name, drv->ifname, IFNAMSIZ);
+		if(ioctl(drv->ioctl_sock, SIOCGIFHWADDR, &ifr)==0) {
+			char *mac = ifr.ifr_hwaddr.sa_data;
+			return os_snprintf(buf, buf_len, "Macaddr = %02X:%02X:%02X:%02X:%02X:%02X\n",
+						mac[0], mac[1], mac[2],
+						mac[3], mac[4], mac[5]);
 		}
-	} else if( os_strcasecmp(cmd, "RELOAD") == 0 ) {
+	} else if (os_strcmp(cmd, "SCAN-ACTIVE")==0) {
+		return 0; /* unsupport function */
+	} else if (os_strcmp(cmd, "SCAN-PASSIVE")==0) {
+		return 0; /* unsupport function */
+	} else if (os_strcmp(cmd, "START")==0) {
+		if (!wpa_driver_atheros_wlan_ctrl(drv, 1)) {
+			wpa_msg(drv->ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "STARTED");
+		} else {
+			wpa_printf(MSG_DEBUG, "Fail to start WLAN");
+		}
+		return 0;
+	} else if (os_strcmp(cmd, "STOP")==0) {
+		if (!wpa_driver_atheros_wlan_ctrl(drv, 0)) {
+			wpa_msg(drv->ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "STOPPED");
+		} else {
+			wpa_printf(MSG_DEBUG, "Fail to stop WLAN");
+		}
+		return 0;
+	} else if (os_strncmp(cmd, "POWERMODE ", 10)==0) {
+		int mode;
+		if (sscanf(cmd, "%*s %d", &mode) == 1) {
+			return wpa_driver_atheros_pwr_mode(drv, mode);
+		}
+		return -1;
+	} else if (os_strcmp(cmd, "SCAN-CHANNELS")==0) {
+		// reply comes back in the form "Scan-Channels = X" where X is the number of channels
+		int val = drv->scan_channels;
+		return os_snprintf(buf, buf_len, "COUNTRY %s",
+			wpa_driver_get_country_code(val));
+	} else if (os_strncmp(cmd, "SCAN-CHANNELS ", 14)==0) {
+		int chan;
+		if (sscanf(cmd, "%*s %d", &chan) != 1)
+			return -1;
+		if ((chan == 11) || (chan == 13) || (chan == 14)) {
+			if (!wpa_driver_atheros_cfg_chan(drv, chan)) {
+				drv->scan_channels = chan;
+				return 0;
+			}
+		}
+		return -1;
+	} else if (os_strncmp(cmd, "BTCOEXMODE ", 11)==0) {
+		int mode;
+		if (sscanf(cmd, "%*s %d", &mode)==1) {
+			/* 
+			 * Android disable BT-COEX when obtaining dhcp packet except there is headset is connected 
+			 * It enable the BT-COEX after dhcp process is finished
+			 * We ignore since we have our way to do bt-coex during dhcp obtaining.
+			 */
+			switch (mode) {			
+			case 1: /* Disable*/
+				break;
+			case 0: /* Enable */
+				/* fall through */
+			case 2: /* Sense*/
+				/* fall through */
+			default:
+				break;
+			}
+			return 0; /* ignore it */
+		}
+	} else if (os_strncmp(cmd, "RXFILTER-ADD ", 13)==0) {
+		return 0; /* ignore it */
+	} else if (os_strncmp(cmd, "RXFILTER-REMOVE ", 16)==0) {
+		return 0; /* ignoret it */
+	} else if (os_strcmp(cmd, "RXFILTER-START")==0) {
+		int flags;
+		if (wpa_driver_ar6000_get_ifflags(drv, &flags) == 0) {	
+			return wpa_driver_ar6000_set_ifflags(drv, flags & ~IFF_MULTICAST);
+		}
+	} else if (os_strcmp(cmd, "RXFILTER-STOP")==0) {
+		int flags;
+		if (wpa_driver_ar6000_get_ifflags(drv, &flags) == 0) {	
+			return wpa_driver_ar6000_set_ifflags(drv, flags | IFF_MULTICAST);
+		}
+	}
+	else if ( os_strcasecmp(cmd, "RELOAD") == 0 ) {
 		wpa_printf(MSG_DEBUG,"Reload command");
 		wpa_msg(drv->ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "HANGED");
-		return ret;
-	} else if( os_strcasecmp(cmd, "BGSCAN-START") == 0 ) {
-		ret = wpa_driver_set_backgroundscan_params(priv);
-		if (ret < 0) {
-			return ret;
-		}
-		os_strncpy(cmd, "PNOFORCE 1", MAX_DRV_CMD_SIZE);
-		drv->bgscan_enabled = 1;
-	} else if( os_strcasecmp(cmd, "BGSCAN-STOP") == 0 ) {
-		os_strncpy(cmd, "PNOFORCE 0", MAX_DRV_CMD_SIZE);
-		drv->bgscan_enabled = 0;
+		return 0;
 	}
 
-	os_memset(&iwr, 0, sizeof(iwr));
-	os_strncpy(iwr.ifr_name, drv->ifname, IFNAMSIZ);
-	os_memcpy(buf, cmd, strlen(cmd) + 1);
-	iwr.u.data.pointer = buf;
-	iwr.u.data.length = buf_len;
+	return -1;
+}
 
-	if( os_strncasecmp(cmd, "CSCAN", 5) == 0 ) {
-		if (!wpa_s->scanning && ((wpa_s->wpa_state <= WPA_SCANNING) ||
-					(wpa_s->wpa_state >= WPA_COMPLETED))) {
-			iwr.u.data.length = wpa_driver_wext_set_cscan_params(buf, buf_len, cmd);
-		} else {
-			wpa_printf(MSG_ERROR, "Ongoing Scan action...");
-			return ret;
-		}
-	}
+#endif // ANDROID
 
-	ret = ioctl(drv->ioctl_sock, SIOCSIWPRIV, &iwr);
+#ifdef CONFIG_WAPI
+static int wpa_driver_ar6000_set_wapi(void * priv, int enabled)
+{
+    struct wpa_driver_ar6000_data *drv = priv;
+    int ret = 0;
+    wpa_printf(MSG_DEBUG, "%s: enabled=%d\n", __func__, enabled);
+#define IW_AUTH_WAPI_ENABLED     0x20
+    if (enabled) {
+        ret = wpa_driver_ar6000_set_auth_param(drv, IW_AUTH_WAPI_ENABLED, 1);
+    } else {
+        ret = wpa_driver_ar6000_set_auth_param(drv, IW_AUTH_WAPI_ENABLED, 0);
+    }
 
-	if (ret < 0) {
-		wpa_printf(MSG_ERROR, "%s failed (%d): %s", __func__, ret, cmd);
-		drv->errors++;
-		if (drv->errors > WEXT_NUMBER_SEQUENTIAL_ERRORS) {
-			drv->errors = 0;
-			wpa_msg(drv->ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "HANGED");
-		}
-	} else {
-		drv->errors = 0;
-		ret = 0;
-		if ((os_strcasecmp(cmd, "RSSI") == 0) ||
-		    (os_strcasecmp(cmd, "LINKSPEED") == 0) ||
-		    (os_strcasecmp(cmd, "MACADDR") == 0) ||
-		    (os_strcasecmp(cmd, "GETPOWER") == 0) ||
-		    (os_strcasecmp(cmd, "GETBAND") == 0)) {
-			ret = strlen(buf);
-		} else if (os_strcasecmp(cmd, "START") == 0) {
-			drv->driver_is_started = TRUE;
-			/* os_sleep(0, WPA_DRIVER_WEXT_WAIT_US);
-			wpa_msg(drv->ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "STARTED"); */
-		} else if (os_strcasecmp(cmd, "STOP") == 0) {
-			drv->driver_is_started = FALSE;
-			/* wpa_msg(drv->ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "STOPPED"); */
-		} else if (os_strncasecmp(cmd, "CSCAN", 5) == 0) {
-			wpa_driver_wext_set_scan_timeout(priv);
-			wpa_supplicant_notify_scanning(wpa_s, 1);
-		}
-		wpa_printf(MSG_DEBUG, "%s %s len = %d, %d", __func__, buf, ret, strlen(buf));
-	}
-	return ret;
+    return ret;
 }
 #endif
 
-
-const struct wpa_driver_ops wpa_driver_wext_ops = {
-	.name = "wext",
+const struct wpa_driver_ops wpa_driver_ar6000_ops = {
+	.name = "ar6000",
 	.desc = "Linux wireless extensions (generic)",
-	.get_bssid = wpa_driver_wext_get_bssid,
-	.get_ssid = wpa_driver_wext_get_ssid,
-	.set_wpa = wpa_driver_wext_set_wpa,
-	.set_key = wpa_driver_wext_set_key,
-	.set_countermeasures = wpa_driver_wext_set_countermeasures,
-	.set_drop_unencrypted = wpa_driver_wext_set_drop_unencrypted,
-	.scan = wpa_driver_wext_scan,
-	.combo_scan = wpa_driver_wext_combo_scan,
-	.get_scan_results2 = wpa_driver_wext_get_scan_results,
-	.deauthenticate = wpa_driver_wext_deauthenticate,
-	.disassociate = wpa_driver_wext_disassociate,
-	.set_mode = wpa_driver_wext_set_mode,
-	.associate = wpa_driver_wext_associate,
-	.set_auth_alg = wpa_driver_wext_set_auth_alg,
-	.init = wpa_driver_wext_init,
-	.deinit = wpa_driver_wext_deinit,
-	.add_pmkid = wpa_driver_wext_add_pmkid,
-	.remove_pmkid = wpa_driver_wext_remove_pmkid,
-	.flush_pmkid = wpa_driver_wext_flush_pmkid,
-	.get_capa = wpa_driver_wext_get_capa,
-	.set_operstate = wpa_driver_wext_set_operstate,
-#ifdef ANDROID
-	.driver_cmd = wpa_driver_priv_driver_cmd,
+	.get_bssid = wpa_driver_ar6000_get_bssid,
+	.get_ssid = wpa_driver_ar6000_get_ssid,
+	.set_wpa = wpa_driver_ar6000_set_wpa,
+	.set_key = wpa_driver_ar6000_set_key,
+	.set_countermeasures = wpa_driver_ar6000_set_countermeasures,
+	.set_drop_unencrypted = wpa_driver_ar6000_set_drop_unencrypted,
+	.scan = wpa_driver_ar6000_scan,
+	.get_scan_results2 = wpa_driver_ar6000_get_scan_results,
+	.deauthenticate = wpa_driver_ar6000_deauthenticate,
+	.disassociate = wpa_driver_ar6000_disassociate,
+	.set_mode = wpa_driver_ar6000_set_mode,
+	.associate = wpa_driver_ar6000_associate,
+	.set_auth_alg = wpa_driver_ar6000_set_auth_alg,
+	.init = wpa_driver_ar6000_init,
+	.deinit = wpa_driver_ar6000_deinit,
+	.add_pmkid = wpa_driver_ar6000_add_pmkid,
+	.remove_pmkid = wpa_driver_ar6000_remove_pmkid,
+	.flush_pmkid = wpa_driver_ar6000_flush_pmkid,
+	.get_capa = wpa_driver_ar6000_get_capa,
+	.set_operstate = wpa_driver_ar6000_set_operstate,
+#ifdef CONFIG_WAPI
+	.set_wpa_ie = wpa_driver_ar6000_set_gen_ie,
+	.set_wapi = wpa_driver_ar6000_set_wapi,
 #endif
+#ifdef ANDROID
+	.driver_cmd = wpa_driver_ar6000_driver_cmd,
+#endif
+
 };

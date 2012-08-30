@@ -111,6 +111,12 @@ typedef enum {
 	WPA_DISCONNECTED,
 
 	/**
+         * FUUUUUU! ICS expects "1" to be "INTERFACE_DISABLED", as per
+         * wpa_supplicant 8. Sending "1" for INACTIVE makes the interface
+         * shutdown as soon as it idles */
+	WPA_INTERFACE_DISABLED,
+
+	/**
 	 * WPA_INACTIVE - Inactive state (wpa_supplicant disabled)
 	 *
 	 * This state is entered if there are no enabled networks in the
@@ -127,6 +133,12 @@ typedef enum {
 	 * network.
 	 */
 	WPA_SCANNING,
+
+	/**
+         * Moar ICS/wpa_supplicant_8 problems... This one caused an authloop
+         */
+	WPA_AUTHENTICATING,
+
 
 	/**
 	 * WPA_ASSOCIATING - Trying to associate with a BSS/SSID
@@ -186,22 +198,6 @@ typedef enum {
 	 * fully configured.
 	 */
 	WPA_COMPLETED
-
-#ifdef ANDROID
-	/**
-	 * WPA_IDLE - Eeplicit disconnect was performed
-	 *
-	 * This state is entered when a disconnect command is issued to the
-	 * supplicant. In this case, the supplicant not only disassociates
-	 * from the current network, but it also stops trying to associate
-	 * with any AP until a subsequent reconnect or reassociate command
-	 * is issued. This state was added to distinguish it from the
-	 * WPA_DISCONNECTED state, which is now reserved for disconnects
-	 * that were not explicitly requested by a client.
-	 * This state is reported to clients, but it is not internally stored.
-	 */
-	, WPA_IDLE
-#endif /* ANDROID */
 } wpa_states;
 
 #define MLME_SETPROTECTION_PROTECT_TYPE_NONE 0

@@ -177,6 +177,15 @@ static int wps_process_cred_network_key(struct wps_credential *cred,
 	if (key == NULL) {
 		wpa_printf(MSG_DEBUG, "WPS: Credential did not include "
 			   "Network Key");
+		/* Fix WPS certification case #5.1.5 */
+		if ((cred->auth_type == WPS_AUTH_OPEN) &&
+		    (cred->encr_type == WPS_ENCR_NONE)) {
+			wpa_printf(MSG_DEBUG, "WPS: Skip Network Key checking "
+				   "When security is None.");
+			cred->key[0] = '\0';
+			cred->key_len = 0;
+			return 0;
+		}
 		return -1;
 	}
 

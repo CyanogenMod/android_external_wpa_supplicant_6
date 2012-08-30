@@ -424,6 +424,17 @@ static int wpa_supplicant_ctrl_iface_bssid(struct wpa_supplicant *wpa_s,
 }
 
 #ifdef ANDROID
+static int wpa_supplicant_ctrl_iface_scan_interval(
+	struct wpa_supplicant *wpa_s, char *cmd)
+{
+	int scan_int = atoi(cmd);
+	if (scan_int < 0)
+		return -1;
+	wpa_s->scan_interval = scan_int;
+	return 0;
+}
+
+
 static int wpa_supplicant_ctrl_iface_blacklist(
 		struct wpa_supplicant *wpa_s, char *cmd, char *buf, size_t buflen)
 {
@@ -1612,6 +1623,7 @@ static int wpa_supplicant_ctrl_iface_ap_scan(
 }
 
 #ifdef ANDROID
+
 static int wpa_supplicant_driver_cmd(struct wpa_supplicant *wpa_s,
                                      char *cmd, char *buf, size_t buflen)
 {
@@ -1623,6 +1635,32 @@ static int wpa_supplicant_driver_cmd(struct wpa_supplicant *wpa_s,
     }
     return( ret );
 }
+
+static int wpa_supplicant_signal_poll(struct wpa_supplicant *wpa_s, char *buf,
+                                      size_t buflen)
+{
+    int ret;
+    int lssize=20;
+    int rssisize=250;
+    char linkspeed[lssize];
+    char rssi[rssisize];
+
+
+    wpa_supplicant_driver_cmd(wpa_s, "LINKSPEED", linkspeed, lssize);
+
+    wpa_supplicant_driver_cmd(wpa_s, "RSSI", rssi, rssisize); // wext+bcm4329 format: SSID rssid val \0   >= 16 (we have to trim the space at end)
+
+    ret = os_snprintf(buf, buflen, "RSSI=%d\nLINKSPEED=%s\n"
+            "NOISE=0\nFREQUENCY=0\n",
+            atoi( strcasestr(rssi,"rssi")+5 ),linkspeed+10);
+
+    if (ret < 0 || (unsigned int) ret > buflen)
+        return -1;
+
+
+    return ret;
+}
+
 #endif
 
 char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
@@ -1632,6 +1670,8 @@ char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
 	const int reply_size = 4096;
 	int ctrl_rsp = 0;
 	int reply_len;
+
+	wpa_printf(MSG_DEBUG, "CMD = %s", buf);
 
 	if (os_strncmp(buf, WPA_CTRL_RSP, os_strlen(WPA_CTRL_RSP)) == 0 ||
 	    os_strncmp(buf, "SET_NETWORK ", 12) == 0) {
@@ -1735,18 +1775,12 @@ char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
 		if (wpa_supplicant_ctrl_iface_bssid(wpa_s, buf + 6))
 			reply_len = -1;
 #ifdef ANDROID
+	} else if (os_strncmp(buf, "SCAN_INTERVAL ", 14) == 0) {
+		reply_len = wpa_supplicant_ctrl_iface_scan_interval(
+				wpa_s, buf + 14);
 	} else if (os_strncmp(buf, "BLACKLIST", 9) == 0) {
 		reply_len = wpa_supplicant_ctrl_iface_blacklist(
 				wpa_s, buf + 9, reply, reply_size);
-		if (os_strlen(buf) > 10 && reply_len == 0) {
-			struct wpa_blacklist *bl = wpa_s->blacklist;
-			if (os_strncmp(buf+10, "clear", 5) == 0 ||
-			    (bl != NULL && os_memcmp(bl->bssid, wpa_s->bssid, ETH_ALEN) == 0)) {
-				wpa_s->disconnected = 0;
-				wpa_s->reassociate = 1;
-				wpa_supplicant_req_scan(wpa_s, 0, 0);
-			}
-		}
 	} else if (os_strncmp(buf, "LOG_LEVEL", 9) == 0) {
 		reply_len = wpa_supplicant_ctrl_iface_log_level(
 				wpa_s, buf + 9, reply, reply_size);
@@ -1815,6 +1849,9 @@ char * wpa_supplicant_ctrl_iface_process(struct wpa_supplicant *wpa_s,
 		reply_len = wpa_supplicant_ctrl_iface_bss(
 			wpa_s, buf + 4, reply, reply_size);
 #ifdef ANDROID
+    } else if (os_strncmp(buf, "SIGNAL_POLL", 11) == 0) {
+                reply_len = wpa_supplicant_signal_poll(wpa_s, reply,
+                                                       reply_size);
     } else if (os_strncmp(buf, "DRIVER ", 7) == 0) {
         reply_len = wpa_supplicant_driver_cmd(wpa_s, buf + 7, reply, reply_size);
 #endif

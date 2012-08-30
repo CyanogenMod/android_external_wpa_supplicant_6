@@ -98,7 +98,7 @@ static int wpa_cli_attached = 0;
 static int wpa_cli_connected = 0;
 static int wpa_cli_last_id = 0;
 #ifdef ANDROID
-static const char *ctrl_iface_dir = "/data/misc/wifi/wpa_supplicant";
+static const char *ctrl_iface_dir = "/data/system/wpa_supplicant";
 #else
 static const char *ctrl_iface_dir = "/var/run/wpa_supplicant";
 #endif
@@ -748,6 +748,26 @@ static int wpa_cli_cmd_bssid(struct wpa_ctrl *ctrl, int argc, char *argv[])
 
 
 #ifdef ANDROID
+static int wpa_cli_cmd_scan_interval(struct wpa_ctrl *ctrl, int argc,
+				     char *argv[])
+{
+	char cmd[256];
+	int res;
+
+	if (argc != 1) {
+		printf("Invalid SCAN_INTERVAL command: needs one argument "
+		       "scan_interval value)\n");
+		return -1;
+	}
+	res = os_snprintf(cmd, sizeof(cmd), "SCAN_INTERVAL %s", argv[0]);
+	if (res < 0 || (size_t) res >= sizeof(cmd) - 1) {
+		printf("Too long SCAN_INTERVAL command.\n");
+		return -1;
+	}
+	return wpa_ctrl_command(ctrl, cmd);
+}
+
+
 static int wpa_cli_cmd_blacklist(struct wpa_ctrl *ctrl, int argc, char *argv[])
 {
 	char cmd[256], *pos, *end;
@@ -1262,6 +1282,9 @@ static struct wpa_cli_cmd wpa_cli_commands[] = {
 	  cli_cmd_flag_none,
 	  "<network id> <BSSID> = set preferred BSSID for an SSID" },
 #ifdef ANDROID
+	{ "scan_interval", wpa_cli_cmd_scan_interval,
+	  cli_cmd_flag_none,
+	  "<value> = set scan_interval parameter" },
 	{ "blacklist", wpa_cli_cmd_blacklist,
 	  cli_cmd_flag_none,
 	  "<BSSID> = add a BSSID to the blacklist\n"
